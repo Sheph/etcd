@@ -36,7 +36,7 @@ func BenchmarkWatchableStorePut(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		s.Put(keys[i], vals[i], lease.NoLease)
+		s.Put(keys[i], vals[i], lease.NoLease, PrototypeInfo{})
 	}
 }
 
@@ -58,7 +58,7 @@ func BenchmarkWatchableStoreTxnPut(b *testing.B) {
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		txn := s.Write()
-		txn.Put(keys[i], vals[i], lease.NoLease)
+		txn.Put(keys[i], vals[i], lease.NoLease, PrototypeInfo{})
 		txn.End()
 	}
 }
@@ -78,14 +78,14 @@ func BenchmarkWatchableStoreWatchSyncPut(b *testing.B) {
 	watchIDs := make([]WatchID, b.N)
 	for i := range watchIDs {
 		// non-0 value to keep watchers in unsynced
-		watchIDs[i] = w.Watch(k, nil, 1)
+		watchIDs[i] = w.Watch(nil, k, nil, 1)
 	}
 
 	b.ResetTimer()
 	b.ReportAllocs()
 
 	// trigger watchers
-	s.Put(k, v, lease.NoLease)
+	s.Put(k, v, lease.NoLease, PrototypeInfo{})
 	for range watchIDs {
 		<-w.Chan()
 	}
@@ -131,7 +131,7 @@ func BenchmarkWatchableStoreUnsyncedCancel(b *testing.B) {
 	// and force watchers to be in unsynced.
 	testKey := []byte("foo")
 	testValue := []byte("bar")
-	s.Put(testKey, testValue, lease.NoLease)
+	s.Put(testKey, testValue, lease.NoLease, PrototypeInfo{})
 
 	w := ws.NewWatchStream()
 
@@ -142,7 +142,7 @@ func BenchmarkWatchableStoreUnsyncedCancel(b *testing.B) {
 	watchIDs := make([]WatchID, watcherN)
 	for i := 0; i < watcherN; i++ {
 		// non-0 value to keep watchers in unsynced
-		watchIDs[i] = w.Watch(testKey, nil, 1)
+		watchIDs[i] = w.Watch(nil, testKey, nil, 1)
 	}
 
 	// random-cancel N watchers to make it not biased towards
@@ -172,7 +172,7 @@ func BenchmarkWatchableStoreSyncedCancel(b *testing.B) {
 	// Put a key so that we can spawn watchers on that key
 	testKey := []byte("foo")
 	testValue := []byte("bar")
-	s.Put(testKey, testValue, lease.NoLease)
+	s.Put(testKey, testValue, lease.NoLease, PrototypeInfo{})
 
 	w := s.NewWatchStream()
 
@@ -182,7 +182,7 @@ func BenchmarkWatchableStoreSyncedCancel(b *testing.B) {
 	watchIDs := make([]WatchID, watcherN)
 	for i := 0; i < watcherN; i++ {
 		// 0 for startRev to keep watchers in synced
-		watchIDs[i] = w.Watch(testKey, nil, 0)
+		watchIDs[i] = w.Watch(nil, testKey, nil, 0)
 	}
 
 	// randomly cancel watchers to make it not biased towards

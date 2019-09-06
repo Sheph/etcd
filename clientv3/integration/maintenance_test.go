@@ -148,7 +148,7 @@ func TestMaintenanceSnapshotErrorInflight(t *testing.T) {
 	s := mvcc.NewStore(b, &lease.FakeLessor{}, nil)
 	rev := 100000
 	for i := 2; i <= rev; i++ {
-		s.Put([]byte(fmt.Sprintf("%10d", i)), bytes.Repeat([]byte("a"), 1024), lease.NoLease)
+		s.Put([]byte(fmt.Sprintf("%10d", i)), bytes.Repeat([]byte("a"), 1024), lease.NoLease, mvcc.PrototypeInfo{})
 	}
 	s.Close()
 	b.Close()

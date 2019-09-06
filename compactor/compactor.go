@@ -47,7 +47,7 @@ type Compactor interface {
 }
 
 type Compactable interface {
-	Compact(ctx context.Context, r *pb.CompactionRequest) (*pb.CompactionResponse, error)
+	CompactWithRoot(ctx context.Context, r *pb.CompactionRequest) (*pb.CompactionResponse, error)
 }
 
 type RevGetter interface {

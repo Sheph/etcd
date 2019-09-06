@@ -61,12 +61,13 @@ func (aa *authApplierV3) Apply(r *pb.InternalRaftRequest) *applyResult {
 	return ret
 }
 
-func (aa *authApplierV3) Put(txn mvcc.TxnWrite, r *pb.PutRequest) (*pb.PutResponse, error) {
-	if err := aa.as.IsPutPermitted(&aa.authInfo, r.Key); err != nil {
+func (aa *authApplierV3) Put(txn mvcc.TxnWrite, cs *auth.CapturedState, r *pb.PutRequest) (*pb.PutResponse, error) {
+	cs, err := aa.as.IsPutPermitted(&aa.authInfo, r.Key)
+	if err != nil {
 		return nil, err
 	}
 
-	if err := aa.checkLeasePuts(lease.LeaseID(r.Lease)); err != nil {
+	if err := checkLeasePuts(aa.lessor, aa.as, &aa.authInfo, lease.LeaseID(r.Lease)); err != nil {
 		// The specified lease is already attached with a key that cannot
 		// be written by this user. It means the user cannot revoke the
 		// lease so attaching the lease to the newly written key should
@@ -75,36 +76,41 @@ func (aa *authApplierV3) Put(txn mvcc.TxnWrite, r *pb.PutRequest) (*pb.PutRespon
 	}
 
 	if r.PrevKv {
-		err := aa.as.IsRangePermitted(&aa.authInfo, r.Key, nil)
+		cs, err = aa.as.IsRangePermitted(&aa.authInfo, r.Key, nil)
 		if err != nil {
 			return nil, err
 		}
 	}
-	return aa.applierV3.Put(txn, r)
+
+	return aa.applierV3.Put(txn, cs, r)
 }
 
-func (aa *authApplierV3) Range(txn mvcc.TxnRead, r *pb.RangeRequest) (*pb.RangeResponse, error) {
-	if err := aa.as.IsRangePermitted(&aa.authInfo, r.Key, r.RangeEnd); err != nil {
+func (aa *authApplierV3) Range(txn mvcc.TxnRead, cs *auth.CapturedState, r *pb.RangeRequest) (*pb.RangeResponse, error) {
+	cs, err := aa.as.IsRangePermitted(&aa.authInfo, r.Key, r.RangeEnd)
+	if err != nil {
 		return nil, err
 	}
-	return aa.applierV3.Range(txn, r)
+	return aa.applierV3.Range(txn, cs, r)
 }
 
-func (aa *authApplierV3) DeleteRange(txn mvcc.TxnWrite, r *pb.DeleteRangeRequest) (*pb.DeleteRangeResponse, error) {
-	if err := aa.as.IsDeleteRangePermitted(&aa.authInfo, r.Key, r.RangeEnd); err != nil {
+func (aa *authApplierV3) DeleteRange(txn mvcc.TxnWrite, cs *auth.CapturedState, r *pb.DeleteRangeRequest) (*pb.DeleteRangeResponse, error) {
+	cs, err := aa.as.IsDeleteRangePermitted(&aa.authInfo, r.Key, r.RangeEnd)
+	if err != nil {
 		return nil, err
 	}
 	if r.PrevKv {
-		err := aa.as.IsRangePermitted(&aa.authInfo, r.Key, r.RangeEnd)
+		cs, err = aa.as.IsRangePermitted(&aa.authInfo, r.Key, r.RangeEnd)
 		if err != nil {
 			return nil, err
 		}
 	}
 
-	return aa.applierV3.DeleteRange(txn, r)
+	return aa.applierV3.DeleteRange(txn, cs, r)
 }
 
-func checkTxnReqsPermission(as auth.AuthStore, ai *auth.AuthInfo, reqs []*pb.RequestOp) error {
+func checkTxnReqsPermission(lessor lease.Lessor, as auth.AuthStore, ai *auth.AuthInfo, reqs []*pb.RequestOp) (*auth.CapturedState, error) {
+	var cs *auth.CapturedState
+	var err error
 	for _, requ := range reqs {
 		switch tv := requ.Request.(type) {
 		case *pb.RequestOp_RequestRange:
@@ -112,8 +118,9 @@ func checkTxnReqsPermission(as auth.AuthStore, ai *auth.AuthInfo, reqs []*pb.Req
 				continue
 			}
 
-			if err := as.IsRangePermitted(ai, tv.RequestRange.Key, tv.RequestRange.RangeEnd); err != nil {
-				return err
+			cs, err = as.IsRangePermitted(ai, tv.RequestRange.Key, tv.RequestRange.RangeEnd)
+			if err != nil {
+				return cs, err
 			}
 
 		case *pb.RequestOp_RequestPut:
@@ -121,8 +128,21 @@ func checkTxnReqsPermission(as auth.AuthStore, ai *auth.AuthInfo, reqs []*pb.Req
 				continue
 			}
 
-			if err := as.IsPutPermitted(ai, tv.RequestPut.Key); err != nil {
-				return err
+			cs, err = as.IsPutPermitted(ai, tv.RequestPut.Key)
+			if err != nil {
+				return cs, err
+			}
+
+			err = checkLeasePuts(lessor, as, ai, lease.LeaseID(tv.RequestPut.Lease))
+			if err != nil {
+				return cs, err
+			}
+
+			if tv.RequestPut.PrevKv {
+				cs, err = as.IsRangePermitted(ai, tv.RequestPut.Key, nil)
+				if err != nil {
+					return cs, err
+				}
 			}
 
 		case *pb.RequestOp_RequestDeleteRange:
@@ -131,57 +151,76 @@ func checkTxnReqsPermission(as auth.AuthStore, ai *auth.AuthInfo, reqs []*pb.Req
 			}
 
 			if tv.RequestDeleteRange.PrevKv {
-				err := as.IsRangePermitted(ai, tv.RequestDeleteRange.Key, tv.RequestDeleteRange.RangeEnd)
+				cs, err = as.IsRangePermitted(ai, tv.RequestDeleteRange.Key, tv.RequestDeleteRange.RangeEnd)
 				if err != nil {
-					return err
+					return cs, err
 				}
 			}
 
-			err := as.IsDeleteRangePermitted(ai, tv.RequestDeleteRange.Key, tv.RequestDeleteRange.RangeEnd)
+			cs, err = as.IsDeleteRangePermitted(ai, tv.RequestDeleteRange.Key, tv.RequestDeleteRange.RangeEnd)
 			if err != nil {
-				return err
+				return cs, err
 			}
 		}
 	}
 
-	return nil
+	return cs, nil
 }
 
-func checkTxnAuth(as auth.AuthStore, ai *auth.AuthInfo, rt *pb.TxnRequest) error {
+func checkTxnAuth(lessor lease.Lessor, as auth.AuthStore, ai *auth.AuthInfo, rt *pb.TxnRequest) (*auth.CapturedState, error) {
+	var cs *auth.CapturedState
+	var err error
 	for _, c := range rt.Compare {
-		if err := as.IsRangePermitted(ai, c.Key, c.RangeEnd); err != nil {
-			return err
+		cs, err = as.IsRangePermitted(ai, c.Key, c.RangeEnd)
+		if err != nil {
+			return cs, err
 		}
 	}
-	if err := checkTxnReqsPermission(as, ai, rt.Success); err != nil {
-		return err
+	cs2, err := checkTxnReqsPermission(lessor, as, ai, rt.Success)
+	if err != nil {
+		return cs2, err
 	}
-	if err := checkTxnReqsPermission(as, ai, rt.Failure); err != nil {
-		return err
+	if cs2 != nil {
+		cs = cs2
 	}
-	return nil
+	cs2, err = checkTxnReqsPermission(lessor, as, ai, rt.Failure)
+	if err != nil {
+		return cs2, err
+	}
+	if cs2 != nil {
+		cs = cs2
+	}
+	return cs, nil
 }
 
-func (aa *authApplierV3) Txn(rt *pb.TxnRequest) (*pb.TxnResponse, error) {
-	if err := checkTxnAuth(aa.as, &aa.authInfo, rt); err != nil {
+func (aa *authApplierV3) Txn(cs *auth.CapturedState, rt *pb.TxnRequest) (*pb.TxnResponse, error) {
+	cs2, err := checkTxnAuth(aa.lessor, aa.as, &aa.authInfo, rt)
+	if err != nil {
 		return nil, err
 	}
-	return aa.applierV3.Txn(rt)
+	if cs2 != nil {
+		cs = cs2
+	}
+	return aa.applierV3.Txn(cs, rt)
 }
 
 func (aa *authApplierV3) LeaseRevoke(lc *pb.LeaseRevokeRequest) (*pb.LeaseRevokeResponse, error) {
-	if err := aa.checkLeasePuts(lease.LeaseID(lc.ID)); err != nil {
+	if err := checkLeasePuts(aa.lessor, aa.as, &aa.authInfo, lease.LeaseID(lc.ID)); err != nil {
 		return nil, err
 	}
 	return aa.applierV3.LeaseRevoke(lc)
 }
 
-func (aa *authApplierV3) checkLeasePuts(leaseID lease.LeaseID) error {
-	lease := aa.lessor.Lookup(leaseID)
+func checkLeasePuts(lessor lease.Lessor, as auth.AuthStore, ai *auth.AuthInfo, leaseID lease.LeaseID) error {
+	lease := lessor.Lookup(leaseID)
 	if lease != nil {
-		for _, key := range lease.Keys() {
-			if err := aa.as.IsPutPermitted(&aa.authInfo, []byte(key)); err != nil {
+		for _, it := range lease.Items() {
+			cs, err := as.IsPutPermitted(ai, []byte(it.Key))
+			if err != nil {
 				return err
+			}
+			if !mvcc.CheckLease(cs, &it) {
+				return auth.ErrPermissionDenied
 			}
 		}
 	}
@@ -211,6 +250,21 @@ func (aa *authApplierV3) RoleGet(r *pb.AuthRoleGetRequest) (*pb.AuthRoleGetRespo
 	return aa.applierV3.RoleGet(r)
 }
 
+func (aa *authApplierV3) UserListAcl(r *pb.AuthUserListAclRequest) (*pb.AuthUserListAclResponse, error) {
+	err := aa.as.IsAdminPermitted(&aa.authInfo)
+	if err != nil && len(r.User) > 0 && r.User != aa.authInfo.Username {
+		aa.authInfo.Username = ""
+		aa.authInfo.Revision = 0
+		return &pb.AuthUserListAclResponse{}, err
+	}
+
+	if len(r.User) <= 0 {
+		r = &pb.AuthUserListAclRequest{User: aa.authInfo.Username}
+	}
+
+	return aa.applierV3.UserListAcl(r)
+}
+
 func needAdminPermission(r *pb.InternalRaftRequest) bool {
 	switch {
 	case r.AuthEnable != nil:
@@ -238,6 +292,18 @@ func needAdminPermission(r *pb.InternalRaftRequest) bool {
 	case r.AuthUserList != nil:
 		return true
 	case r.AuthRoleList != nil:
+		return true
+	case r.AuthPrototypeUpdate != nil:
+		return true
+	case r.AuthPrototypeDelete != nil:
+		return true
+	case r.AuthPrototypeList != nil:
+		return true
+	case r.AuthUserUpdateAcl != nil:
+		return true
+	case r.Compaction != nil:
+		return true
+	case r.Alarm != nil:
 		return true
 	default:
 		return false

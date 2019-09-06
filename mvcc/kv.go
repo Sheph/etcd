@@ -32,6 +32,13 @@ type RangeResult struct {
 	Count int
 }
 
+type RangeExResult struct {
+	Rev   int64
+	Count int
+	Revs  []revision
+	Limit int
+}
+
 type ReadView interface {
 	// FirstRev returns the first KV revision at the time of opening the txn.
 	// After a compaction, the first revision increases to the compaction
@@ -58,6 +65,12 @@ type TxnRead interface {
 	ReadView
 	// End marks the transaction is complete and ready to commit.
 	End()
+
+	GetPrototypeInfo(key []byte, atRev int64) PrototypeInfo
+
+	RangeEx(key, end []byte, ro RangeOptions) (r *RangeExResult, err error)
+
+	RangeExReadKV(r []byte, kv *mvccpb.KeyValue)
 }
 
 type WriteView interface {
@@ -75,7 +88,7 @@ type WriteView interface {
 	// id.
 	// A put also increases the rev of the store, and generates one event in the event history.
 	// The returned rev is the current revision of the KV when the operation is executed.
-	Put(key, value []byte, lease lease.LeaseID) (rev int64)
+	Put(key, value []byte, lease lease.LeaseID, pi PrototypeInfo) (rev int64)
 }
 
 // TxnWrite represents a transaction that can modify the store.
@@ -84,16 +97,38 @@ type TxnWrite interface {
 	WriteView
 	// Changes gets the changes made since opening the write txn.
 	Changes() []mvccpb.KeyValue
+
+	DeleteRangeExPrepare(key, end []byte) ([][]byte, []revision, []PrototypeInfo)
+
+	DeleteRangeExPrevKV(keys [][]byte, revs []revision, canRead []bool) []*mvccpb.KeyValue
+
+	// DeleteRangeEx deletes given keys from the store.
+	// A deleteRangeEx increases the rev of the store if len(keys) > 0.
+	// The returned rev is the current revision of the KV when the operation is executed.
+	// It also generates one event for each key delete in the event history.
+	DeleteRangeEx(keys [][]byte, revs []revision, pi []PrototypeInfo) int64
 }
 
 // txnReadWrite coerces a read txn to a write, panicking on any write operation.
 type txnReadWrite struct{ TxnRead }
 
 func (trw *txnReadWrite) DeleteRange(key, end []byte) (n, rev int64) { panic("unexpected DeleteRange") }
-func (trw *txnReadWrite) Put(key, value []byte, lease lease.LeaseID) (rev int64) {
+func (trw *txnReadWrite) Put(key, value []byte, lease lease.LeaseID, pi PrototypeInfo) (rev int64) {
 	panic("unexpected Put")
 }
 func (trw *txnReadWrite) Changes() []mvccpb.KeyValue { return nil }
+
+func (trw *txnReadWrite) DeleteRangeExPrepare(key, end []byte) ([][]byte, []revision, []PrototypeInfo) {
+	panic("unexpected DeleteRangeExPrepare")
+}
+
+func (trw *txnReadWrite) DeleteRangeExPrevKV(keys [][]byte, revs []revision, canRead []bool) []*mvccpb.KeyValue {
+	panic("unexpected DeleteRangeExPrevKV")
+}
+
+func (trw *txnReadWrite) DeleteRangeEx(keys [][]byte, revs []revision, pi []PrototypeInfo) int64 {
+	panic("unexpected DeleteRangeEx")
+}
 
 func NewReadOnlyTxnWrite(txn TxnRead) TxnWrite { return &txnReadWrite{txn} }
 

@@ -47,10 +47,10 @@ type applyResult struct {
 type applierV3 interface {
 	Apply(r *pb.InternalRaftRequest) *applyResult
 
-	Put(txn mvcc.TxnWrite, p *pb.PutRequest) (*pb.PutResponse, error)
-	Range(txn mvcc.TxnRead, r *pb.RangeRequest) (*pb.RangeResponse, error)
-	DeleteRange(txn mvcc.TxnWrite, dr *pb.DeleteRangeRequest) (*pb.DeleteRangeResponse, error)
-	Txn(rt *pb.TxnRequest) (*pb.TxnResponse, error)
+	Put(txn mvcc.TxnWrite, cs *auth.CapturedState, p *pb.PutRequest) (*pb.PutResponse, error)
+	Range(txn mvcc.TxnRead, cs *auth.CapturedState, r *pb.RangeRequest) (*pb.RangeResponse, error)
+	DeleteRange(txn mvcc.TxnWrite, cs *auth.CapturedState, dr *pb.DeleteRangeRequest) (*pb.DeleteRangeResponse, error)
+	Txn(cs *auth.CapturedState, rt *pb.TxnRequest) (*pb.TxnResponse, error)
 	Compaction(compaction *pb.CompactionRequest) (*pb.CompactionResponse, <-chan struct{}, error)
 
 	LeaseGrant(lc *pb.LeaseGrantRequest) (*pb.LeaseGrantResponse, error)
@@ -76,6 +76,12 @@ type applierV3 interface {
 	RoleDelete(ua *pb.AuthRoleDeleteRequest) (*pb.AuthRoleDeleteResponse, error)
 	UserList(ua *pb.AuthUserListRequest) (*pb.AuthUserListResponse, error)
 	RoleList(ua *pb.AuthRoleListRequest) (*pb.AuthRoleListResponse, error)
+
+	PrototypeUpdate(ua *pb.AuthPrototypeUpdateRequest) (*pb.AuthPrototypeUpdateResponse, error)
+	PrototypeDelete(ua *pb.AuthPrototypeDeleteRequest) (*pb.AuthPrototypeDeleteResponse, error)
+	PrototypeList(ua *pb.AuthPrototypeListRequest) (*pb.AuthPrototypeListResponse, error)
+	UserListAcl(ua *pb.AuthUserListAclRequest) (*pb.AuthUserListAclResponse, error)
+	UserUpdateAcl(ua *pb.AuthUserUpdateAclRequest) (*pb.AuthUserUpdateAclResponse, error)
 }
 
 type checkReqFunc func(mvcc.ReadView, *pb.RequestOp) error
@@ -115,13 +121,13 @@ func (a *applierV3backend) Apply(r *pb.InternalRaftRequest) *applyResult {
 	// call into a.s.applyV3.F instead of a.F so upper appliers can check individual calls
 	switch {
 	case r.Range != nil:
-		ar.resp, ar.err = a.s.applyV3.Range(nil, r.Range)
+		ar.resp, ar.err = a.s.applyV3.Range(nil, auth.EmptyCapturedState, r.Range)
 	case r.Put != nil:
-		ar.resp, ar.err = a.s.applyV3.Put(nil, r.Put)
+		ar.resp, ar.err = a.s.applyV3.Put(nil, auth.EmptyCapturedState, r.Put)
 	case r.DeleteRange != nil:
-		ar.resp, ar.err = a.s.applyV3.DeleteRange(nil, r.DeleteRange)
+		ar.resp, ar.err = a.s.applyV3.DeleteRange(nil, auth.EmptyCapturedState, r.DeleteRange)
 	case r.Txn != nil:
-		ar.resp, ar.err = a.s.applyV3.Txn(r.Txn)
+		ar.resp, ar.err = a.s.applyV3.Txn(auth.EmptyCapturedState, r.Txn)
 	case r.Compaction != nil:
 		ar.resp, ar.physc, ar.err = a.s.applyV3.Compaction(r.Compaction)
 	case r.LeaseGrant != nil:
@@ -162,13 +168,27 @@ func (a *applierV3backend) Apply(r *pb.InternalRaftRequest) *applyResult {
 		ar.resp, ar.err = a.s.applyV3.UserList(r.AuthUserList)
 	case r.AuthRoleList != nil:
 		ar.resp, ar.err = a.s.applyV3.RoleList(r.AuthRoleList)
+	case r.AuthPrototypeUpdate != nil:
+		ar.resp, ar.err = a.s.applyV3.PrototypeUpdate(r.AuthPrototypeUpdate)
+	case r.AuthPrototypeDelete != nil:
+		ar.resp, ar.err = a.s.applyV3.PrototypeDelete(r.AuthPrototypeDelete)
+	case r.AuthPrototypeList != nil:
+		ar.resp, ar.err = a.s.applyV3.PrototypeList(r.AuthPrototypeList)
+	case r.AuthUserListAcl != nil:
+		ar.resp, ar.err = a.s.applyV3.UserListAcl(r.AuthUserListAcl)
+	case r.AuthUserUpdateAcl != nil:
+		ar.resp, ar.err = a.s.applyV3.UserUpdateAcl(r.AuthUserUpdateAcl)
 	default:
 		panic("not implemented")
 	}
 	return ar
 }
 
-func (a *applierV3backend) Put(txn mvcc.TxnWrite, p *pb.PutRequest) (resp *pb.PutResponse, err error) {
+func (a *applierV3backend) Put(txn mvcc.TxnWrite, cs *auth.CapturedState, p *pb.PutRequest) (resp *pb.PutResponse, err error) {
+	return a.putImpl(txn, cs, p, mvcc.CheckPutResult{})
+}
+
+func (a *applierV3backend) putImpl(txn mvcc.TxnWrite, cs *auth.CapturedState, p *pb.PutRequest, cpr mvcc.CheckPutResult) (resp *pb.PutResponse, err error) {
 	resp = &pb.PutResponse{}
 	resp.Header = &pb.ResponseHeader{}
 
@@ -181,10 +201,26 @@ func (a *applierV3backend) Put(txn mvcc.TxnWrite, p *pb.PutRequest) (resp *pb.Pu
 		}
 		txn = a.s.KV().Write()
 		defer txn.End()
+		cpr = mvcc.CheckPut(txn, cs, []*pb.PutRequest{p})[0]
 	}
 
 	var rr *mvcc.RangeResult
-	if p.IgnoreValue || p.IgnoreLease || p.PrevKv {
+
+	if !cpr.CanWrite {
+		// Can't write this path, so just silently skip.
+		// Note that when p.PrevKv is set and cpr.CanRead is true
+		// we technically might return the key to the user (without putting it),
+		// but this will complicate the logic because we also have
+		// p.IgnoreValue and p.IgnoreLease which require key to exist before putting.
+		// For now, just drop this case, if we'll REALLY need it, then it can be implemented.
+		resp.Header.Revision = txn.Rev()
+		if len(txn.Changes()) != 0 {
+			resp.Header.Revision++
+		}
+		return resp, nil
+	}
+
+	if p.IgnoreValue || p.IgnoreLease || (p.PrevKv && cpr.CanRead) {
 		rr, err = txn.Range(p.Key, nil, mvcc.RangeOptions{})
 		if err != nil {
 			return nil, err
@@ -202,17 +238,17 @@ func (a *applierV3backend) Put(txn mvcc.TxnWrite, p *pb.PutRequest) (resp *pb.Pu
 	if p.IgnoreLease {
 		leaseID = lease.LeaseID(rr.KVs[0].Lease)
 	}
-	if p.PrevKv {
+	if p.PrevKv && cpr.CanRead {
 		if rr != nil && len(rr.KVs) != 0 {
 			resp.PrevKv = &rr.KVs[0]
 		}
 	}
 
-	resp.Header.Revision = txn.Put(p.Key, val, leaseID)
+	resp.Header.Revision = txn.Put(p.Key, val, leaseID, cpr.ProtoInfo)
 	return resp, nil
 }
 
-func (a *applierV3backend) DeleteRange(txn mvcc.TxnWrite, dr *pb.DeleteRangeRequest) (*pb.DeleteRangeResponse, error) {
+func (a *applierV3backend) DeleteRange(txn mvcc.TxnWrite, cs *auth.CapturedState, dr *pb.DeleteRangeRequest) (*pb.DeleteRangeResponse, error) {
 	resp := &pb.DeleteRangeResponse{}
 	resp.Header = &pb.ResponseHeader{}
 	end := mkGteRange(dr.RangeEnd)
@@ -222,24 +258,21 @@ func (a *applierV3backend) DeleteRange(txn mvcc.TxnWrite, dr *pb.DeleteRangeRequ
 		defer txn.End()
 	}
 
+	keys, revs, pi := txn.DeleteRangeExPrepare(dr.Key, end)
+
+	fKeys, fRevs, fPi, fCanRead := mvcc.CheckDelete(cs, keys, revs, pi)
+
 	if dr.PrevKv {
-		rr, err := txn.Range(dr.Key, end, mvcc.RangeOptions{})
-		if err != nil {
-			return nil, err
-		}
-		if rr != nil {
-			resp.PrevKvs = make([]*mvccpb.KeyValue, len(rr.KVs))
-			for i := range rr.KVs {
-				resp.PrevKvs[i] = &rr.KVs[i]
-			}
-		}
+		resp.PrevKvs = txn.DeleteRangeExPrevKV(fKeys, fRevs, fCanRead)
 	}
 
-	resp.Deleted, resp.Header.Revision = txn.DeleteRange(dr.Key, end)
+	resp.Deleted = int64(len(fKeys))
+	resp.Header.Revision = txn.DeleteRangeEx(fKeys, fRevs, fPi)
+
 	return resp, nil
 }
 
-func (a *applierV3backend) Range(txn mvcc.TxnRead, r *pb.RangeRequest) (*pb.RangeResponse, error) {
+func (a *applierV3backend) Range(txn mvcc.TxnRead, cs *auth.CapturedState, r *pb.RangeRequest) (*pb.RangeResponse, error) {
 	resp := &pb.RangeResponse{}
 	resp.Header = &pb.ResponseHeader{}
 
@@ -266,10 +299,12 @@ func (a *applierV3backend) Range(txn mvcc.TxnRead, r *pb.RangeRequest) (*pb.Rang
 		Count: r.CountOnly,
 	}
 
-	rr, err := txn.Range(r.Key, mkGteRange(r.RangeEnd), ro)
+	rer, err := txn.RangeEx(r.Key, mkGteRange(r.RangeEnd), ro)
 	if err != nil {
 		return nil, err
 	}
+
+	rr := mvcc.CheckRange(txn, cs, rer)
 
 	if r.MaxModRevision != 0 {
 		f := func(kv *mvccpb.KeyValue) bool { return kv.ModRevision > r.MaxModRevision }
@@ -334,13 +369,45 @@ func (a *applierV3backend) Range(txn mvcc.TxnRead, r *pb.RangeRequest) (*pb.Rang
 	return resp, nil
 }
 
-func (a *applierV3backend) Txn(rt *pb.TxnRequest) (*pb.TxnResponse, error) {
+func (a *applierV3backend) Txn(cs *auth.CapturedState, rt *pb.TxnRequest) (*pb.TxnResponse, error) {
 	isWrite := !isTxnReadonly(rt)
 	txn := mvcc.NewReadOnlyTxnWrite(a.s.KV().Read())
 
+	checkPutRes := []mvcc.CheckPutResult{}
+
 	txnPath := compareToPath(txn, rt)
 	if isWrite {
-		if _, err := checkRequests(txn, rt, txnPath, a.checkPut); err != nil {
+		// First, gather all put requests on txn path, the path
+		// is already evaluated and will not change
+		putRequests := make([]*pb.PutRequest, 0)
+		checkRequests(txn, rt, txnPath, func(rv mvcc.ReadView, reqOp *pb.RequestOp) error {
+			tv, ok := reqOp.Request.(*pb.RequestOp_RequestPut)
+			if !ok || tv.RequestPut == nil {
+				return nil
+			}
+			putRequests = append(putRequests, tv.RequestPut)
+			return nil
+		})
+
+		// Check all put requests at once, calculating prototypes and checking
+		// acl rights
+		checkPutRes = mvcc.CheckPut(txn, cs, putRequests)
+		checkPutResI := 0
+
+		// Run usual checkPut only on those put requests that'll actually get executed later
+		if _, err := checkRequests(txn, rt, txnPath, func(rv mvcc.ReadView, reqOp *pb.RequestOp) error {
+			tv, ok := reqOp.Request.(*pb.RequestOp_RequestPut)
+			if !ok || tv.RequestPut == nil {
+				return nil
+			}
+			cw := checkPutRes[checkPutResI].CanWrite
+			checkPutResI++
+			if cw {
+				return a.checkPut(rv, reqOp)
+			}
+
+			return nil
+		}); err != nil {
 			txn.End()
 			return nil, err
 		}
@@ -360,7 +427,7 @@ func (a *applierV3backend) Txn(rt *pb.TxnRequest) (*pb.TxnResponse, error) {
 		txn.End()
 		txn = a.s.KV().Write()
 	}
-	a.applyTxn(txn, rt, txnPath, txnResp)
+	a.applyTxn(txn, cs, rt, txnPath, checkPutRes, txnResp)
 	rev := txn.Rev()
 	if len(txn.Changes()) != 0 {
 		rev++
@@ -499,7 +566,7 @@ func compareKV(c *pb.Compare, ckv mvccpb.KeyValue) bool {
 	return true
 }
 
-func (a *applierV3backend) applyTxn(txn mvcc.TxnWrite, rt *pb.TxnRequest, txnPath []bool, tresp *pb.TxnResponse) (txns int) {
+func (a *applierV3backend) applyTxn(txn mvcc.TxnWrite, cs *auth.CapturedState, rt *pb.TxnRequest, txnPath []bool, checkPutRes []mvcc.CheckPutResult, tresp *pb.TxnResponse) (txns int) {
 	reqs := rt.Success
 	if !txnPath[0] {
 		reqs = rt.Failure
@@ -508,26 +575,28 @@ func (a *applierV3backend) applyTxn(txn mvcc.TxnWrite, rt *pb.TxnRequest, txnPat
 		respi := tresp.Responses[i].Response
 		switch tv := req.Request.(type) {
 		case *pb.RequestOp_RequestRange:
-			resp, err := a.Range(txn, tv.RequestRange)
+			resp, err := a.Range(txn, cs, tv.RequestRange)
 			if err != nil {
 				plog.Panicf("unexpected error during txn: %v", err)
 			}
 			respi.(*pb.ResponseOp_ResponseRange).ResponseRange = resp
 		case *pb.RequestOp_RequestPut:
-			resp, err := a.Put(txn, tv.RequestPut)
+			cpr := checkPutRes[0]
+			checkPutRes = checkPutRes[1:]
+			resp, err := a.putImpl(txn, cs, tv.RequestPut, cpr)
 			if err != nil {
 				plog.Panicf("unexpected error during txn: %v", err)
 			}
 			respi.(*pb.ResponseOp_ResponsePut).ResponsePut = resp
 		case *pb.RequestOp_RequestDeleteRange:
-			resp, err := a.DeleteRange(txn, tv.RequestDeleteRange)
+			resp, err := a.DeleteRange(txn, cs, tv.RequestDeleteRange)
 			if err != nil {
 				plog.Panicf("unexpected error during txn: %v", err)
 			}
 			respi.(*pb.ResponseOp_ResponseDeleteRange).ResponseDeleteRange = resp
 		case *pb.RequestOp_RequestTxn:
 			resp := respi.(*pb.ResponseOp_ResponseTxn).ResponseTxn
-			applyTxns := a.applyTxn(txn, tv.RequestTxn, txnPath[1:], resp)
+			applyTxns := a.applyTxn(txn, cs, tv.RequestTxn, txnPath[1:], checkPutRes, resp)
 			txns += applyTxns + 1
 			txnPath = txnPath[applyTxns+1:]
 		default:
@@ -627,15 +696,15 @@ type applierV3Capped struct {
 // with Puts so that the number of keys in the store is capped.
 func newApplierV3Capped(base applierV3) applierV3 { return &applierV3Capped{applierV3: base} }
 
-func (a *applierV3Capped) Put(txn mvcc.TxnWrite, p *pb.PutRequest) (*pb.PutResponse, error) {
+func (a *applierV3Capped) Put(txn mvcc.TxnWrite, cs *auth.CapturedState, p *pb.PutRequest) (*pb.PutResponse, error) {
 	return nil, ErrNoSpace
 }
 
-func (a *applierV3Capped) Txn(r *pb.TxnRequest) (*pb.TxnResponse, error) {
+func (a *applierV3Capped) Txn(cs *auth.CapturedState, r *pb.TxnRequest) (*pb.TxnResponse, error) {
 	if a.q.Cost(r) > 0 {
 		return nil, ErrNoSpace
 	}
-	return a.applierV3.Txn(r)
+	return a.applierV3.Txn(cs, r)
 }
 
 func (a *applierV3Capped) LeaseGrant(lc *pb.LeaseGrantRequest) (*pb.LeaseGrantResponse, error) {
@@ -768,6 +837,46 @@ func (a *applierV3backend) RoleList(r *pb.AuthRoleListRequest) (*pb.AuthRoleList
 	return resp, err
 }
 
+func (a *applierV3backend) PrototypeUpdate(r *pb.AuthPrototypeUpdateRequest) (*pb.AuthPrototypeUpdateResponse, error) {
+	resp, err := a.s.AuthStore().PrototypeUpdate(r)
+	if resp != nil {
+		resp.Header = newHeader(a.s)
+	}
+	return resp, err
+}
+
+func (a *applierV3backend) PrototypeDelete(r *pb.AuthPrototypeDeleteRequest) (*pb.AuthPrototypeDeleteResponse, error) {
+	resp, err := a.s.AuthStore().PrototypeDelete(r)
+	if resp != nil {
+		resp.Header = newHeader(a.s)
+	}
+	return resp, err
+}
+
+func (a *applierV3backend) PrototypeList(r *pb.AuthPrototypeListRequest) (*pb.AuthPrototypeListResponse, error) {
+	resp, err := a.s.AuthStore().PrototypeList(r)
+	if resp != nil {
+		resp.Header = newHeader(a.s)
+	}
+	return resp, err
+}
+
+func (a *applierV3backend) UserListAcl(r *pb.AuthUserListAclRequest) (*pb.AuthUserListAclResponse, error) {
+	resp, err := a.s.AuthStore().UserListAcl(r)
+	if resp != nil {
+		resp.Header = newHeader(a.s)
+	}
+	return resp, err
+}
+
+func (a *applierV3backend) UserUpdateAcl(r *pb.AuthUserUpdateAclRequest) (*pb.AuthUserUpdateAclResponse, error) {
+	resp, err := a.s.AuthStore().UserUpdateAcl(r)
+	if resp != nil {
+		resp.Header = newHeader(a.s)
+	}
+	return resp, err
+}
+
 type quotaApplierV3 struct {
 	applierV3
 	q Quota
@@ -777,18 +886,18 @@ func newQuotaApplierV3(s *EtcdServer, app applierV3) applierV3 {
 	return &quotaApplierV3{app, NewBackendQuota(s)}
 }
 
-func (a *quotaApplierV3) Put(txn mvcc.TxnWrite, p *pb.PutRequest) (*pb.PutResponse, error) {
+func (a *quotaApplierV3) Put(txn mvcc.TxnWrite, cs *auth.CapturedState, p *pb.PutRequest) (*pb.PutResponse, error) {
 	ok := a.q.Available(p)
-	resp, err := a.applierV3.Put(txn, p)
+	resp, err := a.applierV3.Put(txn, cs, p)
 	if err == nil && !ok {
 		err = ErrNoSpace
 	}
 	return resp, err
 }
 
-func (a *quotaApplierV3) Txn(rt *pb.TxnRequest) (*pb.TxnResponse, error) {
+func (a *quotaApplierV3) Txn(cs *auth.CapturedState, rt *pb.TxnRequest) (*pb.TxnResponse, error) {
 	ok := a.q.Available(rt)
-	resp, err := a.applierV3.Txn(rt)
+	resp, err := a.applierV3.Txn(cs, rt)
 	if err == nil && !ok {
 		err = ErrNoSpace
 	}

@@ -40,7 +40,7 @@ func TestStoreRev(t *testing.T) {
 	defer os.Remove(tmpPath)
 
 	for i := 1; i <= 3; i++ {
-		s.Put([]byte("foo"), []byte("bar"), lease.NoLease)
+		s.Put([]byte("foo"), []byte("bar"), lease.NoLease, PrototypeInfo{})
 		if r := s.Rev(); r != int64(i+1) {
 			t.Errorf("#%d: rev = %d, want %d", i, r, i+1)
 		}
@@ -72,7 +72,7 @@ func TestStorePut(t *testing.T) {
 	}{
 		{
 			revision{1, 0},
-			indexGetResp{revision{}, revision{}, 0, ErrRevisionNotFound},
+			indexGetResp{revision{}, revision{}, 0, PrototypeInfo{}, ErrRevisionNotFound},
 			nil,
 
 			revision{2, 0},
@@ -89,7 +89,7 @@ func TestStorePut(t *testing.T) {
 		},
 		{
 			revision{1, 1},
-			indexGetResp{revision{2, 0}, revision{2, 0}, 1, nil},
+			indexGetResp{revision{2, 0}, revision{2, 0}, 1, PrototypeInfo{}, nil},
 			&rangeResp{[][]byte{newTestKeyBytes(revision{2, 1}, false)}, [][]byte{kvb}},
 
 			revision{2, 0},
@@ -106,7 +106,7 @@ func TestStorePut(t *testing.T) {
 		},
 		{
 			revision{2, 0},
-			indexGetResp{revision{2, 1}, revision{2, 0}, 2, nil},
+			indexGetResp{revision{2, 1}, revision{2, 0}, 2, PrototypeInfo{}, nil},
 			&rangeResp{[][]byte{newTestKeyBytes(revision{2, 1}, false)}, [][]byte{kvb}},
 
 			revision{3, 0},
@@ -133,7 +133,7 @@ func TestStorePut(t *testing.T) {
 			b.tx.rangeRespc <- *tt.rr
 		}
 
-		s.Put([]byte("foo"), []byte("bar"), lease.LeaseID(i+1))
+		s.Put([]byte("foo"), []byte("bar"), lease.LeaseID(i+1), PrototypeInfo{})
 
 		data, err := tt.wkv.Marshal()
 		if err != nil {
@@ -188,11 +188,11 @@ func TestStoreRange(t *testing.T) {
 		r    rangeResp
 	}{
 		{
-			indexRangeResp{[][]byte{[]byte("foo")}, []revision{{2, 0}}},
+			indexRangeResp{[][]byte{[]byte("foo")}, []revision{{2, 0}}, []PrototypeInfo{{}}},
 			rangeResp{[][]byte{key}, [][]byte{kvb}},
 		},
 		{
-			indexRangeResp{[][]byte{[]byte("foo"), []byte("foo1")}, []revision{{2, 0}, {3, 0}}},
+			indexRangeResp{[][]byte{[]byte("foo"), []byte("foo1")}, []revision{{2, 0}, {3, 0}}, []PrototypeInfo{{}, {}}},
 			rangeResp{[][]byte{key}, [][]byte{kvb}},
 		},
 	}
@@ -266,7 +266,7 @@ func TestStoreDeleteRange(t *testing.T) {
 	}{
 		{
 			revision{2, 0},
-			indexRangeResp{[][]byte{[]byte("foo")}, []revision{{2, 0}}},
+			indexRangeResp{[][]byte{[]byte("foo")}, []revision{{2, 0}}, []PrototypeInfo{{}}},
 			rangeResp{[][]byte{key}, [][]byte{kvb}},
 
 			newTestKeyBytes(revision{3, 0}, true),
@@ -400,8 +400,8 @@ func TestStoreRestore(t *testing.T) {
 	}
 
 	gens := []generation{
-		{created: revision{4, 0}, ver: 2, revs: []revision{{3, 0}, {5, 0}}},
-		{created: revision{0, 0}, ver: 0, revs: nil},
+		{created: revision{4, 0}, ver: 2, revs: []revision{{3, 0}, {5, 0}}, pi: []PrototypeInfo{{}, {}}},
+		{created: revision{0, 0}, ver: 0, revs: nil, pi: nil},
 	}
 	ki := &keyIndex{key: []byte("foo"), modified: revision{5, 0}, generations: gens}
 	wact = []testutil.Action{
@@ -426,13 +426,13 @@ func TestRestoreDelete(t *testing.T) {
 	for i := 0; i < 20; i++ {
 		ks := fmt.Sprintf("foo-%d", i)
 		k := []byte(ks)
-		s.Put(k, []byte("bar"), lease.NoLease)
+		s.Put(k, []byte("bar"), lease.NoLease, PrototypeInfo{})
 		keys[ks] = struct{}{}
 		switch mrand.Intn(3) {
 		case 0:
 			// put random key from past via random range on map
 			ks = fmt.Sprintf("foo-%d", mrand.Intn(i+1))
-			s.Put([]byte(ks), []byte("baz"), lease.NoLease)
+			s.Put([]byte(ks), []byte("baz"), lease.NoLease, PrototypeInfo{})
 			keys[ks] = struct{}{}
 		case 1:
 			// delete random key via random range on map
@@ -468,9 +468,9 @@ func TestRestoreContinueUnfinishedCompaction(t *testing.T) {
 	s0 := NewStore(b, &lease.FakeLessor{}, nil)
 	defer os.Remove(tmpPath)
 
-	s0.Put([]byte("foo"), []byte("bar"), lease.NoLease)
-	s0.Put([]byte("foo"), []byte("bar1"), lease.NoLease)
-	s0.Put([]byte("foo"), []byte("bar2"), lease.NoLease)
+	s0.Put([]byte("foo"), []byte("bar"), lease.NoLease, PrototypeInfo{})
+	s0.Put([]byte("foo"), []byte("bar1"), lease.NoLease, PrototypeInfo{})
+	s0.Put([]byte("foo"), []byte("bar2"), lease.NoLease, PrototypeInfo{})
 
 	// write scheduled compaction, but not do compaction
 	rbytes := newRevBytes()
@@ -524,7 +524,7 @@ func TestHashKVWhenCompacting(t *testing.T) {
 
 	rev := 10000
 	for i := 2; i <= rev; i++ {
-		s.Put([]byte("foo"), []byte(fmt.Sprintf("bar%d", i)), lease.NoLease)
+		s.Put([]byte("foo"), []byte(fmt.Sprintf("bar%d", i)), lease.NoLease, PrototypeInfo{})
 	}
 
 	hashCompactc := make(chan hashKVResult, 1)
@@ -592,7 +592,7 @@ func TestHashKVZeroRevision(t *testing.T) {
 
 	rev := 1000
 	for i := 2; i <= rev; i++ {
-		s.Put([]byte("foo"), []byte(fmt.Sprintf("bar%d", i)), lease.NoLease)
+		s.Put([]byte("foo"), []byte(fmt.Sprintf("bar%d", i)), lease.NoLease, PrototypeInfo{})
 	}
 	if _, err := s.Compact(int64(rev / 2)); err != nil {
 		t.Fatal(err)
@@ -626,7 +626,7 @@ func TestTxnPut(t *testing.T) {
 	for i := 0; i < sliceN; i++ {
 		txn := s.Write()
 		base := int64(i + 2)
-		if rev := txn.Put(keys[i], vals[i], lease.NoLease); rev != base {
+		if rev := txn.Put(keys[i], vals[i], lease.NoLease, PrototypeInfo{}); rev != base {
 			t.Errorf("#%d: rev = %d, want %d", i, rev, base)
 		}
 		txn.End()
@@ -751,12 +751,14 @@ type indexGetResp struct {
 	rev     revision
 	created revision
 	ver     int64
+	pi      PrototypeInfo
 	err     error
 }
 
 type indexRangeResp struct {
 	keys [][]byte
 	revs []revision
+	pi   []PrototypeInfo
 }
 
 type indexRangeEventsResp struct {
@@ -771,25 +773,25 @@ type fakeIndex struct {
 	indexCompactRespc     chan map[revision]struct{}
 }
 
-func (i *fakeIndex) Revisions(key, end []byte, atRev int64) []revision {
-	_, rev := i.Range(key, end, atRev)
-	return rev
+func (i *fakeIndex) Revisions(key, end []byte, atRev int64) ([]revision, []PrototypeInfo) {
+	_, rev, pi := i.Range(key, end, atRev)
+	return rev, pi
 }
 
-func (i *fakeIndex) Get(key []byte, atRev int64) (rev, created revision, ver int64, err error) {
+func (i *fakeIndex) Get(key []byte, atRev int64) (rev, created revision, ver int64, pi PrototypeInfo, err error) {
 	i.Recorder.Record(testutil.Action{Name: "get", Params: []interface{}{key, atRev}})
 	r := <-i.indexGetRespc
-	return r.rev, r.created, r.ver, r.err
+	return r.rev, r.created, r.ver, r.pi, r.err
 }
-func (i *fakeIndex) Range(key, end []byte, atRev int64) ([][]byte, []revision) {
+func (i *fakeIndex) Range(key, end []byte, atRev int64) ([][]byte, []revision, []PrototypeInfo) {
 	i.Recorder.Record(testutil.Action{Name: "range", Params: []interface{}{key, end, atRev}})
 	r := <-i.indexRangeRespc
-	return r.keys, r.revs
+	return r.keys, r.revs, r.pi
 }
-func (i *fakeIndex) Put(key []byte, rev revision) {
+func (i *fakeIndex) Put(key []byte, rev revision, pi PrototypeInfo) {
 	i.Recorder.Record(testutil.Action{Name: "put", Params: []interface{}{key, rev}})
 }
-func (i *fakeIndex) Tombstone(key []byte, rev revision) error {
+func (i *fakeIndex) Tombstone(key []byte, rev revision, pi PrototypeInfo) error {
 	i.Recorder.Record(testutil.Action{Name: "tombstone", Params: []interface{}{key, rev}})
 	return nil
 }

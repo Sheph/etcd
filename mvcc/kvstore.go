@@ -65,6 +65,11 @@ type ConsistentIndexGetter interface {
 	ConsistentIndex() uint64
 }
 
+type leaseInfo struct {
+	lid lease.LeaseID
+	pi  PrototypeInfo
+}
+
 type store struct {
 	ReadView
 	WriteView
@@ -322,7 +327,7 @@ func (s *store) restore() error {
 	revToBytes(revision{main: 1}, min)
 	revToBytes(revision{main: math.MaxInt64, sub: math.MaxInt64}, max)
 
-	keyToLease := make(map[string]lease.LeaseID)
+	keyToLease := make(map[string]leaseInfo)
 
 	// restore index
 	tx := s.b.BatchTx()
@@ -372,11 +377,12 @@ func (s *store) restore() error {
 		scheduledCompact = 0
 	}
 
-	for key, lid := range keyToLease {
+	for key, li := range keyToLease {
 		if s.le == nil {
 			panic("no lessor to attach lease")
 		}
-		err := s.le.Attach(lid, []lease.LeaseItem{{Key: key}})
+		err := s.le.Attach(li.lid, []lease.LeaseItem{{Key: key,
+			PrototypeIdx: li.pi.PrototypeIdx, ForceFindDepth: li.pi.ForceFindDepth}})
 		if err != nil {
 			plog.Errorf("unexpected Attach error: %v", err)
 		}
@@ -429,12 +435,13 @@ func restoreIntoIndex(idx index) (chan<- revKeyValue, <-chan int64) {
 			currentRev = rev.main
 			if ok {
 				if isTombstone(rkv.key) {
-					ki.tombstone(rev.main, rev.sub)
+					ki.tombstone(rev.main, rev.sub, PrototypeInfo{rkv.kv.PrototypeIdx, rkv.kv.ForceFindDepth})
 					continue
 				}
-				ki.put(rev.main, rev.sub)
+				ki.put(rev.main, rev.sub, PrototypeInfo{rkv.kv.PrototypeIdx, rkv.kv.ForceFindDepth})
 			} else if !isTombstone(rkv.key) {
-				ki.restore(revision{rkv.kv.CreateRevision, 0}, rev, rkv.kv.Version)
+				ki.restore(revision{rkv.kv.CreateRevision, 0}, rev, rkv.kv.Version,
+					PrototypeInfo{rkv.kv.PrototypeIdx, rkv.kv.ForceFindDepth})
 				idx.Insert(ki)
 				kiCache[rkv.kstr] = ki
 			}
@@ -443,7 +450,7 @@ func restoreIntoIndex(idx index) (chan<- revKeyValue, <-chan int64) {
 	return rkvc, revc
 }
 
-func restoreChunk(kvc chan<- revKeyValue, keys, vals [][]byte, keyToLease map[string]lease.LeaseID) {
+func restoreChunk(kvc chan<- revKeyValue, keys, vals [][]byte, keyToLease map[string]leaseInfo) {
 	for i, key := range keys {
 		rkv := revKeyValue{key: key}
 		if err := rkv.kv.Unmarshal(vals[i]); err != nil {
@@ -453,7 +460,7 @@ func restoreChunk(kvc chan<- revKeyValue, keys, vals [][]byte, keyToLease map[st
 		if isTombstone(key) {
 			delete(keyToLease, rkv.kstr)
 		} else if lid := lease.LeaseID(rkv.kv.Lease); lid != lease.NoLease {
-			keyToLease[rkv.kstr] = lid
+			keyToLease[rkv.kstr] = leaseInfo{lid, PrototypeInfo{rkv.kv.PrototypeIdx, rkv.kv.ForceFindDepth}}
 		} else {
 			delete(keyToLease, rkv.kstr)
 		}

@@ -81,6 +81,11 @@ type Authenticator interface {
 	RoleDelete(ctx context.Context, r *pb.AuthRoleDeleteRequest) (*pb.AuthRoleDeleteResponse, error)
 	UserList(ctx context.Context, r *pb.AuthUserListRequest) (*pb.AuthUserListResponse, error)
 	RoleList(ctx context.Context, r *pb.AuthRoleListRequest) (*pb.AuthRoleListResponse, error)
+	PrototypeUpdate(ctx context.Context, r *pb.AuthPrototypeUpdateRequest) (*pb.AuthPrototypeUpdateResponse, error)
+	PrototypeDelete(ctx context.Context, r *pb.AuthPrototypeDeleteRequest) (*pb.AuthPrototypeDeleteResponse, error)
+	PrototypeList(ctx context.Context, r *pb.AuthPrototypeListRequest) (*pb.AuthPrototypeListResponse, error)
+	UserListAcl(ctx context.Context, r *pb.AuthUserListAclRequest) (*pb.AuthUserListAclResponse, error)
+	UserUpdateAcl(ctx context.Context, r *pb.AuthUserUpdateAclRequest) (*pb.AuthUserUpdateAclResponse, error)
 }
 
 func (s *EtcdServer) Range(ctx context.Context, r *pb.RangeRequest) (*pb.RangeResponse, error) {
@@ -96,11 +101,11 @@ func (s *EtcdServer) Range(ctx context.Context, r *pb.RangeRequest) (*pb.RangeRe
 			return nil, err
 		}
 	}
-	chk := func(ai *auth.AuthInfo) error {
+	chk := func(ai *auth.AuthInfo) (*auth.CapturedState, error) {
 		return s.authStore.IsRangePermitted(ai, r.Key, r.RangeEnd)
 	}
 
-	get := func() { resp, err = s.applyV3Base.Range(nil, r) }
+	get := func(cs *auth.CapturedState) { resp, err = s.applyV3Base.Range(nil, cs, r) }
 	if serr := s.doSerialize(ctx, chk, get); serr != nil {
 		err = serr
 		return nil, err
@@ -134,15 +139,19 @@ func (s *EtcdServer) Txn(ctx context.Context, r *pb.TxnRequest) (*pb.TxnResponse
 		}
 		var resp *pb.TxnResponse
 		var err error
-		chk := func(ai *auth.AuthInfo) error {
-			return checkTxnAuth(s.authStore, ai, r)
+		chk := func(ai *auth.AuthInfo) (*auth.CapturedState, error) {
+			cs, err := checkTxnAuth(s.lessor, s.authStore, ai, r)
+			if cs == nil {
+				cs = auth.EmptyCapturedState
+			}
+			return cs, err
 		}
 
 		defer func(start time.Time) {
 			warnOfExpensiveReadOnlyTxnRequest(start, r, resp, err)
 		}(time.Now())
 
-		get := func() { resp, err = s.applyV3Base.Txn(r) }
+		get := func(cs *auth.CapturedState) { resp, err = s.applyV3Base.Txn(cs, r) }
 		if serr := s.doSerialize(ctx, chk, get); serr != nil {
 			return nil, serr
 		}
@@ -212,6 +221,10 @@ func (s *EtcdServer) Compact(ctx context.Context, r *pb.CompactionRequest) (*pb.
 	return resp, nil
 }
 
+func (s *EtcdServer) CompactWithRoot(ctx context.Context, r *pb.CompactionRequest) (*pb.CompactionResponse, error) {
+	return s.Compact(s.authStore.WithRoot(ctx), r)
+}
+
 func (s *EtcdServer) LeaseGrant(ctx context.Context, r *pb.LeaseGrantRequest) (*pb.LeaseGrantResponse, error) {
 	// no id given? choose one
 	for r.ID == int64(lease.NoLease) {
@@ -272,10 +285,10 @@ func (s *EtcdServer) LeaseTimeToLive(ctx context.Context, r *pb.LeaseTimeToLiveR
 		// TODO: fill out ResponseHeader
 		resp := &pb.LeaseTimeToLiveResponse{Header: &pb.ResponseHeader{}, ID: r.ID, TTL: int64(le.Remaining().Seconds()), GrantedTTL: le.TTL()}
 		if r.Keys {
-			ks := le.Keys()
-			kbs := make([][]byte, len(ks))
-			for i := range ks {
-				kbs[i] = []byte(ks[i])
+			its := le.Items()
+			kbs := make([][]byte, len(its))
+			for i := range its {
+				kbs[i] = []byte(its[i].Key)
 			}
 			resp.Keys = kbs
 		}
@@ -388,7 +401,7 @@ func (s *EtcdServer) Authenticate(ctx context.Context, r *pb.AuthenticateRequest
 		if err != nil {
 			return nil, err
 		}
-		if checkedRevision == s.AuthStore().Revision() {
+		if checkedRevision == s.AuthStore().ModRevision(r.Name) {
 			break
 		}
 		plog.Infof("revision when password checked is obsolete, retrying")
@@ -501,6 +514,46 @@ func (s *EtcdServer) RoleDelete(ctx context.Context, r *pb.AuthRoleDeleteRequest
 	return resp.(*pb.AuthRoleDeleteResponse), nil
 }
 
+func (s *EtcdServer) PrototypeUpdate(ctx context.Context, r *pb.AuthPrototypeUpdateRequest) (*pb.AuthPrototypeUpdateResponse, error) {
+	resp, err := s.raftRequest(ctx, pb.InternalRaftRequest{AuthPrototypeUpdate: r})
+	if err != nil {
+		return nil, err
+	}
+	return resp.(*pb.AuthPrototypeUpdateResponse), nil
+}
+
+func (s *EtcdServer) PrototypeDelete(ctx context.Context, r *pb.AuthPrototypeDeleteRequest) (*pb.AuthPrototypeDeleteResponse, error) {
+	resp, err := s.raftRequest(ctx, pb.InternalRaftRequest{AuthPrototypeDelete: r})
+	if err != nil {
+		return nil, err
+	}
+	return resp.(*pb.AuthPrototypeDeleteResponse), nil
+}
+
+func (s *EtcdServer) PrototypeList(ctx context.Context, r *pb.AuthPrototypeListRequest) (*pb.AuthPrototypeListResponse, error) {
+	resp, err := s.raftRequest(ctx, pb.InternalRaftRequest{AuthPrototypeList: r})
+	if err != nil {
+		return nil, err
+	}
+	return resp.(*pb.AuthPrototypeListResponse), nil
+}
+
+func (s *EtcdServer) UserListAcl(ctx context.Context, r *pb.AuthUserListAclRequest) (*pb.AuthUserListAclResponse, error) {
+	resp, err := s.raftRequest(ctx, pb.InternalRaftRequest{AuthUserListAcl: r})
+	if err != nil {
+		return nil, err
+	}
+	return resp.(*pb.AuthUserListAclResponse), nil
+}
+
+func (s *EtcdServer) UserUpdateAcl(ctx context.Context, r *pb.AuthUserUpdateAclRequest) (*pb.AuthUserUpdateAclResponse, error) {
+	resp, err := s.raftRequest(ctx, pb.InternalRaftRequest{AuthUserUpdateAcl: r})
+	if err != nil {
+		return nil, err
+	}
+	return resp.(*pb.AuthUserUpdateAclResponse), nil
+}
+
 func (s *EtcdServer) raftRequestOnce(ctx context.Context, r pb.InternalRaftRequest) (proto.Message, error) {
 	result, err := s.processInternalRaftRequestOnce(ctx, r)
 	if err != nil {
@@ -513,39 +566,31 @@ func (s *EtcdServer) raftRequestOnce(ctx context.Context, r pb.InternalRaftReque
 }
 
 func (s *EtcdServer) raftRequest(ctx context.Context, r pb.InternalRaftRequest) (proto.Message, error) {
-	for {
-		resp, err := s.raftRequestOnce(ctx, r)
-		if err != auth.ErrAuthOldRevision {
-			return resp, err
-		}
-	}
+	return s.raftRequestOnce(ctx, r)
 }
 
 // doSerialize handles the auth logic, with permissions checked by "chk", for a serialized request "get". Returns a non-nil error on authentication failure.
-func (s *EtcdServer) doSerialize(ctx context.Context, chk func(*auth.AuthInfo) error, get func()) error {
-	for {
-		ai, err := s.AuthInfoFromCtx(ctx)
-		if err != nil {
-			return err
-		}
-		if ai == nil {
-			// chk expects non-nil AuthInfo; use empty credentials
-			ai = &auth.AuthInfo{}
-		}
-		if err = chk(ai); err != nil {
-			if err == auth.ErrAuthOldRevision {
-				continue
-			}
-			return err
-		}
-		// fetch response for serialized request
-		get()
-		//  empty credentials or current auth info means no need to retry
-		if ai.Revision == 0 || ai.Revision == s.authStore.Revision() {
-			return nil
-		}
-		// avoid TOCTOU error, retry of the request is required.
+func (s *EtcdServer) doSerialize(ctx context.Context, chk func(*auth.AuthInfo) (*auth.CapturedState, error), get func(*auth.CapturedState)) error {
+	ai, err := s.AuthInfoFromCtx(ctx)
+	if err != nil {
+		return err
 	}
+	if ai == nil {
+		// chk expects non-nil AuthInfo; use empty credentials
+		ai = &auth.AuthInfo{}
+	}
+	cs, err := chk(ai)
+	if err != nil {
+		return err
+	}
+	// fetch response for serialized request
+	get(cs)
+	// check for stale token revision in case the auth store was updated while
+	// the request has been handled.
+	if ai.Revision != 0 && ai.Revision != s.authStore.ModRevision(ai.Username) {
+		return auth.ErrAuthOldRevision
+	}
+	return nil
 }
 
 func (s *EtcdServer) processInternalRaftRequestOnce(ctx context.Context, r pb.InternalRaftRequest) (*applyResult, error) {

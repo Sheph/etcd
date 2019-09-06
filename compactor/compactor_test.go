@@ -26,7 +26,7 @@ type fakeCompactable struct {
 	testutil.Recorder
 }
 
-func (fc *fakeCompactable) Compact(ctx context.Context, r *pb.CompactionRequest) (*pb.CompactionResponse, error) {
+func (fc *fakeCompactable) CompactWithRoot(ctx context.Context, r *pb.CompactionRequest) (*pb.CompactionResponse, error) {
 	fc.Record(testutil.Action{Name: "c", Params: []interface{}{r}})
 	return &pb.CompactionResponse{}, nil
 }

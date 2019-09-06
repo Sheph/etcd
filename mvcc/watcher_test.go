@@ -40,13 +40,13 @@ func TestWatcherWatchID(t *testing.T) {
 	idm := make(map[WatchID]struct{})
 
 	for i := 0; i < 10; i++ {
-		id := w.Watch([]byte("foo"), nil, 0)
+		id := w.Watch(nil, []byte("foo"), nil, 0)
 		if _, ok := idm[id]; ok {
 			t.Errorf("#%d: id %d exists", i, id)
 		}
 		idm[id] = struct{}{}
 
-		s.Put([]byte("foo"), []byte("bar"), lease.NoLease)
+		s.Put([]byte("foo"), []byte("bar"), lease.NoLease, PrototypeInfo{})
 
 		resp := <-w.Chan()
 		if resp.WatchID != id {
@@ -58,11 +58,11 @@ func TestWatcherWatchID(t *testing.T) {
 		}
 	}
 
-	s.Put([]byte("foo2"), []byte("bar"), lease.NoLease)
+	s.Put([]byte("foo2"), []byte("bar"), lease.NoLease, PrototypeInfo{})
 
 	// unsynced watchers
 	for i := 10; i < 20; i++ {
-		id := w.Watch([]byte("foo2"), nil, 1)
+		id := w.Watch(nil, []byte("foo2"), nil, 1)
 		if _, ok := idm[id]; ok {
 			t.Errorf("#%d: id %d exists", i, id)
 		}
@@ -95,13 +95,13 @@ func TestWatcherWatchPrefix(t *testing.T) {
 	keyWatch, keyEnd, keyPut := []byte("foo"), []byte("fop"), []byte("foobar")
 
 	for i := 0; i < 10; i++ {
-		id := w.Watch(keyWatch, keyEnd, 0)
+		id := w.Watch(nil, keyWatch, keyEnd, 0)
 		if _, ok := idm[id]; ok {
 			t.Errorf("#%d: unexpected duplicated id %x", i, id)
 		}
 		idm[id] = struct{}{}
 
-		s.Put(keyPut, val, lease.NoLease)
+		s.Put(keyPut, val, lease.NoLease, PrototypeInfo{})
 
 		resp := <-w.Chan()
 		if resp.WatchID != id {
@@ -123,11 +123,11 @@ func TestWatcherWatchPrefix(t *testing.T) {
 	}
 
 	keyWatch1, keyEnd1, keyPut1 := []byte("foo1"), []byte("foo2"), []byte("foo1bar")
-	s.Put(keyPut1, val, lease.NoLease)
+	s.Put(keyPut1, val, lease.NoLease, PrototypeInfo{})
 
 	// unsynced watchers
 	for i := 10; i < 15; i++ {
-		id := w.Watch(keyWatch1, keyEnd1, 1)
+		id := w.Watch(nil, keyWatch1, keyEnd1, 1)
 		if _, ok := idm[id]; ok {
 			t.Errorf("#%d: id %d exists", i, id)
 		}
@@ -163,14 +163,14 @@ func TestWatcherWatchWrongRange(t *testing.T) {
 	w := s.NewWatchStream()
 	defer w.Close()
 
-	if id := w.Watch([]byte("foa"), []byte("foa"), 1); id != -1 {
+	if id := w.Watch(nil, []byte("foa"), []byte("foa"), 1); id != -1 {
 		t.Fatalf("key == end range given; id expected -1, got %d", id)
 	}
-	if id := w.Watch([]byte("fob"), []byte("foa"), 1); id != -1 {
+	if id := w.Watch(nil, []byte("fob"), []byte("foa"), 1); id != -1 {
 		t.Fatalf("key > end range given; id expected -1, got %d", id)
 	}
 	// watch request with 'WithFromKey' has empty-byte range end
-	if id := w.Watch([]byte("foo"), []byte{}, 1); id != 0 {
+	if id := w.Watch(nil, []byte("foo"), []byte{}, 1); id != 0 {
 		t.Fatalf("\x00 is range given; id expected 0, got %d", id)
 	}
 }
@@ -187,12 +187,12 @@ func TestWatchDeleteRange(t *testing.T) {
 	testKeyPrefix := []byte("foo")
 
 	for i := 0; i < 3; i++ {
-		s.Put([]byte(fmt.Sprintf("%s_%d", testKeyPrefix, i)), []byte("bar"), lease.NoLease)
+		s.Put([]byte(fmt.Sprintf("%s_%d", testKeyPrefix, i)), []byte("bar"), lease.NoLease, PrototypeInfo{})
 	}
 
 	w := s.NewWatchStream()
 	from, to := []byte(testKeyPrefix), []byte(fmt.Sprintf("%s_%d", testKeyPrefix, 99))
-	w.Watch(from, to, 0)
+	w.Watch(nil, from, to, 0)
 
 	s.DeleteRange(from, to)
 
@@ -222,7 +222,7 @@ func TestWatchStreamCancelWatcherByID(t *testing.T) {
 	w := s.NewWatchStream()
 	defer w.Close()
 
-	id := w.Watch([]byte("foo"), nil, 0)
+	id := w.Watch(nil, []byte("foo"), nil, 0)
 
 	tests := []struct {
 		cancelID WatchID
@@ -272,7 +272,7 @@ func TestWatcherRequestProgress(t *testing.T) {
 	testKey := []byte("foo")
 	notTestKey := []byte("bad")
 	testValue := []byte("bar")
-	s.Put(testKey, testValue, lease.NoLease)
+	s.Put(testKey, testValue, lease.NoLease, PrototypeInfo{})
 
 	w := s.NewWatchStream()
 
@@ -284,7 +284,7 @@ func TestWatcherRequestProgress(t *testing.T) {
 	default:
 	}
 
-	id := w.Watch(notTestKey, nil, 1)
+	id := w.Watch(nil, notTestKey, nil, 1)
 	w.RequestProgress(id)
 	select {
 	case resp := <-w.Chan():
@@ -318,7 +318,7 @@ func TestWatcherWatchWithFilter(t *testing.T) {
 		return e.Type == mvccpb.PUT
 	}
 
-	w.Watch([]byte("foo"), nil, 0, filterPut)
+	w.Watch(nil, []byte("foo"), nil, 0, filterPut)
 	done := make(chan struct{})
 
 	go func() {
@@ -326,7 +326,7 @@ func TestWatcherWatchWithFilter(t *testing.T) {
 		done <- struct{}{}
 	}()
 
-	s.Put([]byte("foo"), []byte("bar"), 0)
+	s.Put([]byte("foo"), []byte("bar"), 0, PrototypeInfo{})
 
 	select {
 	case <-done:

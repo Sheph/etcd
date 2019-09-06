@@ -19,6 +19,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"math"
 	"sort"
 	"strings"
 	"sync"
@@ -40,33 +41,43 @@ var (
 	authEnabled   = []byte{1}
 	authDisabled  = []byte{0}
 
-	revisionKey = []byte("authRevision")
+	revisionKey          = []byte("authRevision")
+	prototypeRevisionKey = []byte("authPrototypeRevision")
+	prototypeLastIdxKey  = []byte("authPrototypeLastIdx")
 
-	authBucketName      = []byte("auth")
-	authUsersBucketName = []byte("authUsers")
-	authRolesBucketName = []byte("authRoles")
+	authBucketName           = []byte("auth")
+	authUsersBucketName      = []byte("authUsers")
+	authRolesBucketName      = []byte("authRoles")
+	authPrototypesBucketName = []byte("authPrototypes")
 
 	plog = capnslog.NewPackageLogger("github.com/coreos/etcd", "auth")
 
-	ErrRootUserNotExist     = errors.New("auth: root user does not exist")
-	ErrRootRoleNotExist     = errors.New("auth: root user does not have root role")
-	ErrUserAlreadyExist     = errors.New("auth: user already exists")
-	ErrUserEmpty            = errors.New("auth: user name is empty")
-	ErrUserNotFound         = errors.New("auth: user not found")
-	ErrRoleAlreadyExist     = errors.New("auth: role already exists")
-	ErrRoleNotFound         = errors.New("auth: role not found")
-	ErrAuthFailed           = errors.New("auth: authentication failed, invalid user ID or password")
-	ErrPermissionDenied     = errors.New("auth: permission denied")
-	ErrRoleNotGranted       = errors.New("auth: role is not granted to the user")
-	ErrPermissionNotGranted = errors.New("auth: permission is not granted to the role")
-	ErrAuthNotEnabled       = errors.New("auth: authentication is not enabled")
-	ErrAuthOldRevision      = errors.New("auth: revision in header is old")
-	ErrInvalidAuthToken     = errors.New("auth: invalid auth token")
-	ErrInvalidAuthOpts      = errors.New("auth: invalid auth options")
-	ErrInvalidAuthMgmt      = errors.New("auth: invalid auth management")
+	ErrRootUserNotExist      = errors.New("auth: root user does not exist")
+	ErrRootRoleNotExist      = errors.New("auth: root user does not have root role")
+	ErrUserAlreadyExist      = errors.New("auth: user already exists")
+	ErrUserEmpty             = errors.New("auth: user name is empty")
+	ErrUserNotFound          = errors.New("auth: user not found")
+	ErrRoleAlreadyExist      = errors.New("auth: role already exists")
+	ErrRoleNotFound          = errors.New("auth: role not found")
+	ErrAuthFailed            = errors.New("auth: authentication failed, invalid user ID or password")
+	ErrPermissionDenied      = errors.New("auth: permission denied")
+	ErrRoleNotGranted        = errors.New("auth: role is not granted to the user")
+	ErrPermissionNotGranted  = errors.New("auth: permission is not granted to the role")
+	ErrAuthNotEnabled        = errors.New("auth: authentication is not enabled")
+	ErrAuthOldRevision       = errors.New("auth: revision in header is old")
+	ErrInvalidAuthToken      = errors.New("auth: invalid auth token")
+	ErrInvalidAuthOpts       = errors.New("auth: invalid auth options")
+	ErrInvalidAuthMgmt       = errors.New("auth: invalid auth management")
+	ErrPrototypeNameEmpty    = errors.New("auth: prototype name is empty")
+	ErrPrototypeDuplicateKey = errors.New("auth: duplicate keys not allowed in prototypes")
+	ErrPrototypeNotFound     = errors.New("auth: prototype not found")
+	ErrAclBadPath            = errors.New("auth: bad path in acl")
+	ErrAclDuplicatePath      = errors.New("auth: duplicate paths not allowed in acls")
 
 	// BcryptCost is the algorithm cost / strength for hashing auth passwords
 	BcryptCost = bcrypt.DefaultCost
+
+	EmptyCapturedState = NewCapturedState(nil, nil)
 )
 
 const (
@@ -76,7 +87,8 @@ const (
 	tokenTypeSimple = "simple"
 	tokenTypeJWT    = "jwt"
 
-	revBytesLen = 8
+	revBytesLen          = 8
+	prototypeRevBytesLen = 8
 )
 
 type AuthInfo struct {
@@ -142,14 +154,20 @@ type AuthStore interface {
 	// RoleList gets a list of all roles
 	RoleList(r *pb.AuthRoleListRequest) (*pb.AuthRoleListResponse, error)
 
+	PrototypeUpdate(r *pb.AuthPrototypeUpdateRequest) (*pb.AuthPrototypeUpdateResponse, error)
+	PrototypeDelete(r *pb.AuthPrototypeDeleteRequest) (*pb.AuthPrototypeDeleteResponse, error)
+	PrototypeList(r *pb.AuthPrototypeListRequest) (*pb.AuthPrototypeListResponse, error)
+	UserListAcl(r *pb.AuthUserListAclRequest) (*pb.AuthUserListAclResponse, error)
+	UserUpdateAcl(r *pb.AuthUserUpdateAclRequest) (*pb.AuthUserUpdateAclResponse, error)
+
 	// IsPutPermitted checks put permission of the user
-	IsPutPermitted(authInfo *AuthInfo, key []byte) error
+	IsPutPermitted(authInfo *AuthInfo, key []byte) (*CapturedState, error)
 
 	// IsRangePermitted checks range permission of the user
-	IsRangePermitted(authInfo *AuthInfo, key, rangeEnd []byte) error
+	IsRangePermitted(authInfo *AuthInfo, key, rangeEnd []byte) (*CapturedState, error)
 
 	// IsDeleteRangePermitted checks delete-range permission of the user
-	IsDeleteRangePermitted(authInfo *AuthInfo, key, rangeEnd []byte) error
+	IsDeleteRangePermitted(authInfo *AuthInfo, key, rangeEnd []byte) (*CapturedState, error)
 
 	// IsAdminPermitted checks admin permission of the user
 	IsAdminPermitted(authInfo *AuthInfo) error
@@ -160,6 +178,9 @@ type AuthStore interface {
 
 	// Revision gets current revision of authStore
 	Revision() uint64
+
+	// ModRevision gets current modification revision of a user
+	ModRevision(username string) uint64
 
 	// CheckPassword checks a given pair of username and password is correct
 	CheckPassword(username, password string) (uint64, error)
@@ -181,7 +202,7 @@ type AuthStore interface {
 }
 
 type TokenProvider interface {
-	info(ctx context.Context, token string, revision uint64) (*AuthInfo, bool)
+	info(ctx context.Context, token string) (*AuthInfo, bool)
 	assign(ctx context.Context, username string, revision uint64) (string, error)
 	enable()
 	disable()
@@ -199,6 +220,9 @@ type authStore struct {
 	enabledMu sync.RWMutex
 
 	rangePermCache map[string]*unifiedRangePermissions // username -> unifiedRangePermissions
+	aclCache       map[string]*AclCache                // username -> AclCache
+
+	prototypeCache *PrototypeCache
 
 	tokenProvider TokenProvider
 }
@@ -233,6 +257,7 @@ func (as *authStore) AuthEnable() error {
 	as.tokenProvider.enable()
 
 	as.rangePermCache = make(map[string]*unifiedRangePermissions)
+	as.aclCache = make(map[string]*AclCache)
 
 	as.setRevision(getRevision(tx))
 
@@ -288,7 +313,7 @@ func (as *authStore) Authenticate(ctx context.Context, username, password string
 	// Password checking is already performed in the API layer, so we don't need to check for now.
 	// Staleness of password can be detected with OCC in the API layer, too.
 
-	token, err := as.tokenProvider.assign(ctx, username, as.Revision())
+	token, err := as.tokenProvider.assign(ctx, username, user.ModRevision)
 	if err != nil {
 		return nil, err
 	}
@@ -316,7 +341,7 @@ func (as *authStore) CheckPassword(username, password string) (uint64, error) {
 		return 0, ErrAuthFailed
 	}
 
-	return getRevision(tx), nil
+	return user.ModRevision, nil
 }
 
 func (as *authStore) Recover(be backend.Backend) {
@@ -332,6 +357,8 @@ func (as *authStore) Recover(be backend.Backend) {
 	}
 
 	as.setRevision(getRevision(tx))
+
+	as.reinitCaches(tx)
 
 	tx.Unlock()
 
@@ -361,8 +388,9 @@ func (as *authStore) UserAdd(r *pb.AuthUserAddRequest) (*pb.AuthUserAddResponse,
 	}
 
 	newUser := &authpb.User{
-		Name:     []byte(r.Name),
-		Password: hashed,
+		Name:        []byte(r.Name),
+		Password:    hashed,
+		ModRevision: as.Revision() + 1,
 	}
 
 	putUser(tx, newUser)
@@ -394,6 +422,7 @@ func (as *authStore) UserDelete(r *pb.AuthUserDeleteRequest) (*pb.AuthUserDelete
 	as.commitRevision(tx)
 
 	as.invalidateCachedPerm(r.Name)
+	delete(as.aclCache, r.Name)
 	as.tokenProvider.invalidateUser(r.Name)
 
 	plog.Noticef("deleted a user: %s", r.Name)
@@ -420,9 +449,12 @@ func (as *authStore) UserChangePassword(r *pb.AuthUserChangePasswordRequest) (*p
 	}
 
 	updatedUser := &authpb.User{
-		Name:     []byte(r.Name),
-		Roles:    user.Roles,
-		Password: hashed,
+		Name:        []byte(r.Name),
+		Roles:       user.Roles,
+		Password:    hashed,
+		ModRevision: user.ModRevision,
+		Acl:         user.Acl,
+		AclRevision: user.AclRevision,
 	}
 
 	putUser(tx, updatedUser)
@@ -461,6 +493,7 @@ func (as *authStore) UserGrantRole(r *pb.AuthUserGrantRoleRequest) (*pb.AuthUser
 	}
 
 	user.Roles = append(user.Roles, r.Role)
+	user.ModRevision = as.Revision() + 1
 	sort.Strings(user.Roles)
 
 	putUser(tx, user)
@@ -517,8 +550,11 @@ func (as *authStore) UserRevokeRole(r *pb.AuthUserRevokeRoleRequest) (*pb.AuthUs
 	}
 
 	updatedUser := &authpb.User{
-		Name:     user.Name,
-		Password: user.Password,
+		Name:        user.Name,
+		Password:    user.Password,
+		ModRevision: as.Revision() + 1,
+		Acl:         user.Acl,
+		AclRevision: user.AclRevision,
 	}
 
 	for _, role := range user.Roles {
@@ -593,6 +629,21 @@ func (as *authStore) RoleRevokePermission(r *pb.AuthRoleRevokePermissionRequest)
 		return nil, ErrPermissionNotGranted
 	}
 
+	users := getAllUsers(tx)
+	for _, user := range users {
+		updateUser := false
+		for _, rl := range user.Roles {
+			if strings.Compare(rl, r.Role) == 0 {
+				updateUser = true
+				break
+			}
+		}
+		if updateUser {
+			user.ModRevision = as.Revision() + 1
+			putUser(tx, user)
+		}
+	}
+
 	putRole(tx, updatedRole)
 
 	// TODO(mitake): currently single role update invalidates every cache
@@ -625,8 +676,11 @@ func (as *authStore) RoleDelete(r *pb.AuthRoleDeleteRequest) (*pb.AuthRoleDelete
 	users := getAllUsers(tx)
 	for _, user := range users {
 		updatedUser := &authpb.User{
-			Name:     user.Name,
-			Password: user.Password,
+			Name:        user.Name,
+			Password:    user.Password,
+			ModRevision: as.Revision() + 1,
+			Acl:         user.Acl,
+			AclRevision: user.AclRevision,
 		}
 
 		for _, role := range user.Roles {
@@ -673,8 +727,136 @@ func (as *authStore) RoleAdd(r *pb.AuthRoleAddRequest) (*pb.AuthRoleAddResponse,
 	return &pb.AuthRoleAddResponse{}, nil
 }
 
+func (as *authStore) PrototypeUpdate(r *pb.AuthPrototypeUpdateRequest) (*pb.AuthPrototypeUpdateResponse, error) {
+	if len(r.Prototype.Name) == 0 {
+		return nil, ErrPrototypeNameEmpty
+	}
+
+	tx := as.be.BatchTx()
+	tx.Lock()
+	defer tx.Unlock()
+
+	newCache, prototype, err := as.prototypeCache.Update(r.Prototype)
+	if err != nil {
+		return nil, err
+	}
+	putPrototype(tx, prototype)
+	if newCache.LastIdx != as.prototypeCache.LastIdx {
+		putPrototypeLastIdx(tx, newCache.LastIdx)
+	}
+	if newCache.Rev != as.prototypeCache.Rev {
+		putPrototypeRevision(tx, newCache.Rev)
+		users := getAllUsers(tx)
+		for _, user := range users {
+			if !hasRootRole(user) {
+				user.ModRevision = as.Revision() + 1
+				putUser(tx, user)
+			}
+		}
+	}
+	as.prototypeCache = newCache
+
+	as.commitRevision(tx)
+
+	plog.Noticef("updated prototype: %s", r.Prototype.Name)
+
+	return &pb.AuthPrototypeUpdateResponse{}, nil
+}
+
+func (as *authStore) PrototypeDelete(r *pb.AuthPrototypeDeleteRequest) (*pb.AuthPrototypeDeleteResponse, error) {
+	tx := as.be.BatchTx()
+	tx.Lock()
+	defer tx.Unlock()
+
+	newCache, idx, err := as.prototypeCache.Delete(r.Name)
+	if err != nil {
+		return nil, err
+	}
+	if newCache.Rev != as.prototypeCache.Rev {
+		putPrototypeRevision(tx, newCache.Rev)
+		users := getAllUsers(tx)
+		for _, user := range users {
+			if !hasRootRole(user) {
+				user.ModRevision = as.Revision() + 1
+				putUser(tx, user)
+			}
+		}
+	}
+	as.prototypeCache = newCache
+
+	delPrototype(tx, idx)
+
+	as.commitRevision(tx)
+
+	plog.Noticef("deleted prototype: %s", r.Name)
+
+	return &pb.AuthPrototypeDeleteResponse{}, nil
+}
+
+func (as *authStore) PrototypeList(r *pb.AuthPrototypeListRequest) (*pb.AuthPrototypeListResponse, error) {
+	tx := as.be.BatchTx()
+	tx.Lock()
+	defer tx.Unlock()
+
+	return &pb.AuthPrototypeListResponse{Prototypes: as.prototypeCache.List()}, nil
+}
+
+func (as *authStore) UserListAcl(r *pb.AuthUserListAclRequest) (*pb.AuthUserListAclResponse, error) {
+	tx := as.be.BatchTx()
+	tx.Lock()
+	user := getUser(tx, r.User)
+	tx.Unlock()
+
+	if user == nil {
+		return nil, ErrUserNotFound
+	}
+
+	var resp pb.AuthUserListAclResponse
+	resp.Acl = append(resp.Acl, user.Acl...)
+	return &resp, nil
+}
+
+func (as *authStore) UserUpdateAcl(r *pb.AuthUserUpdateAclRequest) (*pb.AuthUserUpdateAclResponse, error) {
+	tx := as.be.BatchTx()
+	tx.Lock()
+	defer tx.Unlock()
+
+	user := getUser(tx, r.User)
+	if user == nil {
+		return nil, ErrUserNotFound
+	}
+
+	ac := as.getAclCache(user)
+
+	newAc, err := ac.Update(r.Acl)
+	if err != nil {
+		return nil, err
+	}
+
+	user.Acl = r.Acl
+	user.AclRevision = newAc.Rev
+	if !hasRootRole(user) {
+		user.ModRevision = as.Revision() + 1
+	}
+	putUser(tx, user)
+	as.aclCache[string(user.Name)] = newAc
+
+	as.commitRevision(tx)
+
+	plog.Noticef("user %s acl updated", r.User)
+	return &pb.AuthUserUpdateAclResponse{}, nil
+}
+
 func (as *authStore) authInfoFromToken(ctx context.Context, token string) (*AuthInfo, bool) {
-	return as.tokenProvider.info(ctx, token, as.Revision())
+	ai, res := as.tokenProvider.info(ctx, token)
+	if res && (ai.Revision == 0) {
+		ai.Revision = as.ModRevision(ai.Username)
+		if ai.Revision == 0 {
+			plog.Warningf("invalid token: %s", token)
+			return nil, false
+		}
+	}
+	return ai, res
 }
 
 type permSlice []*authpb.Permission
@@ -720,6 +902,21 @@ func (as *authStore) RoleGrantPermission(r *pb.AuthRoleGrantPermissionRequest) (
 		sort.Sort(permSlice(role.KeyPermission))
 	}
 
+	users := getAllUsers(tx)
+	for _, user := range users {
+		updateUser := false
+		for _, rl := range user.Roles {
+			if strings.Compare(rl, r.Name) == 0 {
+				updateUser = true
+				break
+			}
+		}
+		if updateUser {
+			user.ModRevision = as.Revision() + 1
+			putUser(tx, user)
+		}
+	}
+
 	putRole(tx, role)
 
 	// TODO(mitake): currently single role update invalidates every cache
@@ -733,19 +930,15 @@ func (as *authStore) RoleGrantPermission(r *pb.AuthRoleGrantPermissionRequest) (
 	return &pb.AuthRoleGrantPermissionResponse{}, nil
 }
 
-func (as *authStore) isOpPermitted(userName string, revision uint64, key, rangeEnd []byte, permTyp authpb.Permission_Type) error {
+func (as *authStore) isOpPermitted(userName string, revision uint64, key, rangeEnd []byte, permTyp authpb.Permission_Type) (*CapturedState, error) {
 	// TODO(mitake): this function would be costly so we need a caching mechanism
 	if !as.isAuthEnabled() {
-		return nil
+		return NewCapturedState(as.prototypeCache, nil), nil
 	}
 
 	// only gets rev == 0 when passed AuthInfo{}; no user given
 	if revision == 0 {
-		return ErrUserEmpty
-	}
-
-	if revision < as.Revision() {
-		return ErrAuthOldRevision
+		return NewCapturedState(as.prototypeCache, nil), ErrUserEmpty
 	}
 
 	tx := as.be.BatchTx()
@@ -755,30 +948,35 @@ func (as *authStore) isOpPermitted(userName string, revision uint64, key, rangeE
 	user := getUser(tx, userName)
 	if user == nil {
 		plog.Errorf("invalid user name %s for permission checking", userName)
-		return ErrPermissionDenied
+		return NewCapturedState(as.prototypeCache, nil), ErrPermissionDenied
+	}
+
+	if revision != user.ModRevision {
+		return NewCapturedState(as.prototypeCache, nil), ErrAuthOldRevision
 	}
 
 	// root role should have permission on all ranges
 	if hasRootRole(user) {
-		return nil
+		// we don't use acl for the root user
+		return NewCapturedState(as.prototypeCache, nil), nil
 	}
 
 	if as.isRangeOpPermitted(tx, userName, key, rangeEnd, permTyp) {
-		return nil
+		return NewCapturedState(as.prototypeCache, as.getAclCache(user)), nil
 	}
 
-	return ErrPermissionDenied
+	return NewCapturedState(as.prototypeCache, nil), ErrPermissionDenied
 }
 
-func (as *authStore) IsPutPermitted(authInfo *AuthInfo, key []byte) error {
+func (as *authStore) IsPutPermitted(authInfo *AuthInfo, key []byte) (*CapturedState, error) {
 	return as.isOpPermitted(authInfo.Username, authInfo.Revision, key, nil, authpb.WRITE)
 }
 
-func (as *authStore) IsRangePermitted(authInfo *AuthInfo, key, rangeEnd []byte) error {
+func (as *authStore) IsRangePermitted(authInfo *AuthInfo, key, rangeEnd []byte) (*CapturedState, error) {
 	return as.isOpPermitted(authInfo.Username, authInfo.Revision, key, rangeEnd, authpb.READ)
 }
 
-func (as *authStore) IsDeleteRangePermitted(authInfo *AuthInfo, key, rangeEnd []byte) error {
+func (as *authStore) IsDeleteRangePermitted(authInfo *AuthInfo, key, rangeEnd []byte) (*CapturedState, error) {
 	return as.isOpPermitted(authInfo.Username, authInfo.Revision, key, rangeEnd, authpb.WRITE)
 }
 
@@ -895,6 +1093,46 @@ func delRole(tx backend.BatchTx, rolename string) {
 	tx.UnsafeDelete(authRolesBucketName, []byte(rolename))
 }
 
+func getAllPrototypes(tx backend.BatchTx) ([]int64, []*authpb.Prototype) {
+	min, max := newProtoIdxBytes(), newProtoIdxBytes()
+	protoIdxToBytes(1, min)
+	protoIdxToBytes(math.MaxInt64, max)
+
+	ks, vs := tx.UnsafeRange(authPrototypesBucketName, min, max, -1)
+	if len(vs) == 0 {
+		return make([]int64, 0), make([]*authpb.Prototype, 0)
+	}
+
+	prototypes := make([]*authpb.Prototype, len(vs))
+	protoIdxs := make([]int64, len(ks))
+	for i, key := range ks {
+		prototype := &authpb.Prototype{}
+		err := prototype.Unmarshal(vs[i])
+		if err != nil {
+			plog.Panicf("failed to unmarshal prototype struct: %s", err)
+		}
+		prototypes[i] = prototype
+		protoIdxs[i] = bytesToProtoIdx(key)
+	}
+	return protoIdxs, prototypes
+}
+
+func putPrototype(tx backend.BatchTx, prototype *CachedPrototype) {
+	p, err := prototype.Orig.Marshal()
+	if err != nil {
+		plog.Panicf("failed to marshal prototype struct (name: %s): %s", prototype.Orig.Name, err)
+	}
+	idx := newProtoIdxBytes()
+	protoIdxToBytes(prototype.Idx, idx)
+	tx.UnsafePut(authPrototypesBucketName, idx, p)
+}
+
+func delPrototype(tx backend.BatchTx, idx int64) {
+	bytes := newProtoIdxBytes()
+	protoIdxToBytes(idx, bytes)
+	tx.UnsafeDelete(authPrototypesBucketName, bytes)
+}
+
 func (as *authStore) isAuthEnabled() bool {
 	as.enabledMu.RLock()
 	defer as.enabledMu.RUnlock()
@@ -908,6 +1146,7 @@ func NewAuthStore(be backend.Backend, tp TokenProvider) *authStore {
 	tx.UnsafeCreateBucket(authBucketName)
 	tx.UnsafeCreateBucket(authUsersBucketName)
 	tx.UnsafeCreateBucket(authRolesBucketName)
+	tx.UnsafeCreateBucket(authPrototypesBucketName)
 
 	enabled := false
 	_, vs := tx.UnsafeRange(authBucketName, enableFlagKey, nil, 0)
@@ -932,6 +1171,8 @@ func NewAuthStore(be backend.Backend, tp TokenProvider) *authStore {
 	if as.Revision() == 0 {
 		as.commitRevision(tx)
 	}
+
+	as.reinitCaches(tx)
 
 	tx.Unlock()
 	be.ForceCommit()
@@ -962,12 +1203,55 @@ func getRevision(tx backend.BatchTx) uint64 {
 	return binary.BigEndian.Uint64(vs[0])
 }
 
+func getPrototypeRevision(tx backend.BatchTx) int64 {
+	_, vs := tx.UnsafeRange(authBucketName, []byte(prototypeRevisionKey), nil, 0)
+	if len(vs) != 1 {
+		// this can happen in the initialization phase
+		return 0
+	}
+	return int64(binary.BigEndian.Uint64(vs[0]))
+}
+
+func putPrototypeRevision(tx backend.BatchTx, rev int64) {
+	prototypeRevBytes := make([]byte, prototypeRevBytesLen)
+	binary.BigEndian.PutUint64(prototypeRevBytes, uint64(rev))
+	tx.UnsafePut(authBucketName, prototypeRevisionKey, prototypeRevBytes)
+}
+
+func getPrototypeLastIdx(tx backend.BatchTx) int64 {
+	_, vs := tx.UnsafeRange(authBucketName, []byte(prototypeLastIdxKey), nil, 0)
+	if len(vs) != 1 {
+		// this can happen in the initialization phase
+		return 0
+	}
+	return bytesToProtoIdx(vs[0])
+}
+
+func putPrototypeLastIdx(tx backend.BatchTx, lastIdx int64) {
+	bytes := newProtoIdxBytes()
+	protoIdxToBytes(lastIdx, bytes)
+	tx.UnsafePut(authBucketName, prototypeLastIdxKey, bytes)
+}
+
 func (as *authStore) setRevision(rev uint64) {
 	atomic.StoreUint64(&as.revision, rev)
 }
 
 func (as *authStore) Revision() uint64 {
 	return atomic.LoadUint64(&as.revision)
+}
+
+func (as *authStore) ModRevision(username string) uint64 {
+	tx := as.be.BatchTx()
+	tx.Lock()
+	user := getUser(tx, username)
+	tx.Unlock()
+
+	if user == nil {
+		return 0
+	}
+
+	return user.ModRevision
 }
 
 func (as *authStore) AuthInfoFromTLS(ctx context.Context) *AuthInfo {
@@ -984,7 +1268,7 @@ func (as *authStore) AuthInfoFromTLS(ctx context.Context) *AuthInfo {
 
 			ai := &AuthInfo{
 				Username: cn,
-				Revision: as.Revision(),
+				Revision: 0,
 			}
 			md, ok := metadata.FromIncomingContext(ctx)
 			if !ok {
@@ -998,6 +1282,13 @@ func (as *authStore) AuthInfoFromTLS(ctx context.Context) *AuthInfo {
 				plog.Warningf("ignoring common name in gRPC-gateway proxy request %s", ai.Username)
 				return nil
 			}
+
+			ai.Revision = as.ModRevision(ai.Username)
+			if ai.Revision == 0 {
+				plog.Warningf("no user found for %s", ai.Username)
+				return nil
+			}
+
 			return ai
 		}
 	}
@@ -1099,7 +1390,12 @@ func (as *authStore) WithRoot(ctx context.Context) context.Context {
 		ctxForAssign = ctx
 	}
 
-	token, err := as.tokenProvider.assign(ctxForAssign, "root", as.Revision())
+	rev := as.ModRevision("root")
+	if rev == 0 {
+		plog.Errorf("failed to get root user mod revision")
+		return ctx
+	}
+	token, err := as.tokenProvider.assign(ctxForAssign, "root", rev)
 	if err != nil {
 		// this must not happen
 		plog.Errorf("failed to assign token for lease revoking: %s", err)
@@ -1133,4 +1429,33 @@ func (as *authStore) HasRole(user, role string) bool {
 	}
 
 	return false
+}
+
+func (as *authStore) reinitCaches(tx backend.BatchTx) {
+	as.aclCache = make(map[string]*AclCache)
+	protoIdxs, prototypes := getAllPrototypes(tx)
+	newCache := NewPrototypeCache(getPrototypeRevision(tx), getPrototypeLastIdx(tx), protoIdxs, prototypes)
+	as.prototypeCache = newCache
+}
+
+func (as *authStore) getAclCache(user *authpb.User) *AclCache {
+	userName := string(user.Name)
+	ac, ok := as.aclCache[userName]
+	if !ok {
+		ac = NewAclCache(user.AclRevision, user.Acl)
+		as.aclCache[userName] = ac
+	}
+	return ac
+}
+
+func newProtoIdxBytes() []byte {
+	return make([]byte, 8)
+}
+
+func protoIdxToBytes(protoIdx int64, bytes []byte) {
+	binary.BigEndian.PutUint64(bytes, uint64(protoIdx))
+}
+
+func bytesToProtoIdx(bytes []byte) int64 {
+	return int64(binary.BigEndian.Uint64(bytes[0:8]))
 }
