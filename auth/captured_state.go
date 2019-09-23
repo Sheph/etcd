@@ -65,7 +65,15 @@ func (cs *CapturedState) CanReadWrite(path []byte, protoIdx int64, forceFindDept
 
 		rights := cs.aclCache.GetRights(path)
 
-		canRead := (field.RightsRead == 0) || ((field.RightsRead & rights) != 0)
+		canRead := false
+		if field.RightsRead == 0 {
+			p1 := PathGetPrefix(path, 1)
+			if p1 != nil {
+				canRead, _ = cs.CanReadWrite(p1, protoIdx, forceFindDepth)
+			}
+		} else {
+			canRead = (field.RightsRead & rights) != 0
+		}
 		canWrite := (field.RightsWrite & rights) != 0
 
 		return canRead, canWrite
