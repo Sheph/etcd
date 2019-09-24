@@ -90,6 +90,14 @@ func PathIsDir(key []byte) bool {
 	return (len(key) > 0) && key[len(key)-1] == '/'
 }
 
+func PathIsDelMarker(key []byte) (bool, []byte) {
+	if (len(key) >= 3) && key[0] == '/' && key[1] == '!' && key[2] == '/' {
+		return true, key[2:]
+	} else {
+		return false, nil
+	}
+}
+
 func PathGetProtoName(value []byte) []byte {
 	pos := bytes.IndexByte(value, ',')
 	if pos >= 0 {

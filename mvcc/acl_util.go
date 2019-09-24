@@ -23,17 +23,24 @@ func CheckPut(txn TxnRead, cs *auth.CapturedState, requests []*pb.PutRequest) []
 	if cs.HaveAcl() {
 		// Users with ACL cannot create dirs and change prototypes, they can only read/write keys
 		for i, r := range requests {
-			if auth.PathIsDir(r.Key) {
-				res[i].ProtoInfo = txn.GetPrototypeInfo(r.Key, txn.Rev())
+			key := r.Key
+
+			if dm, tp := auth.PathIsDelMarker(key); dm {
+				// If it's a del marker use target path for acl checking instead.
+				key = tp
+			}
+
+			if auth.PathIsDir(key) {
+				res[i].ProtoInfo = txn.GetPrototypeInfo(key, txn.Rev())
 			} else {
 				// If it's a key it may not exist yet, but its dir should already exist, so
 				// get prototype of a dir instead
-				p1 := auth.PathGetPrefix(r.Key, 1)
+				p1 := auth.PathGetPrefix(key, 1)
 				if p1 != nil {
 					res[i].ProtoInfo = txn.GetPrototypeInfo(p1, txn.Rev())
 				}
 			}
-			res[i].CanRead, res[i].CanWrite = cs.CanReadWrite(r.Key,
+			res[i].CanRead, res[i].CanWrite = cs.CanReadWrite(key,
 				res[i].ProtoInfo.PrototypeIdx, res[i].ProtoInfo.ForceFindDepth)
 		}
 		return res
@@ -55,8 +62,15 @@ func CheckPut(txn TxnRead, cs *auth.CapturedState, requests []*pb.PutRequest) []
 	for i, r := range sortedRequests {
 		prevPi := PrototypeInfo{}
 
+		key := r.req.Key
+
+		if dm, tp := auth.PathIsDelMarker(key); dm {
+			// If it's a del marker use target path for setting prototype
+			key = tp
+		}
+
 		// Get parent dir
-		p1 := auth.PathGetPrefix(r.req.Key, 1)
+		p1 := auth.PathGetPrefix(key, 1)
 		if p1 != nil {
 			idx := sort.Search(i, func(j int) bool { return bytes.Compare(sortedRequests[j].req.Key, p1) >= 0 })
 			if idx < i && bytes.Compare(sortedRequests[idx].req.Key, p1) == 0 {
@@ -73,10 +87,10 @@ func CheckPut(txn TxnRead, cs *auth.CapturedState, requests []*pb.PutRequest) []
 			prevProto = cs.GetPrototype(prevPi.PrototypeIdx)
 		}
 
-		if (prevProto != nil) || auth.PathIsRoot(r.req.Key) {
+		if (prevProto != nil) || auth.PathIsRoot(key) {
 			// Should only set proto info for this path if proto info for prev path exists
 			// or if it's a root path, i.e. simply "/"
-			if auth.PathIsDir(r.req.Key) {
+			if auth.PathIsDir(key) {
 				pn := auth.PathGetProtoName(r.req.Value)
 				if pn != nil {
 					proto := cs.GetPrototypeByName(string(pn))
@@ -112,7 +126,12 @@ func CheckDelete(cs *auth.CapturedState, keys [][]byte, revs []revision, pi []Pr
 	fCanRead := make([]bool, 0, len(keys))
 
 	for i, key := range keys {
-		cr, cw := cs.CanReadWrite(key, pi[i].PrototypeIdx, pi[i].ForceFindDepth)
+		cKey := key
+		if dm, tp := auth.PathIsDelMarker(cKey); dm {
+			// If it's a del marker use target path for acl checking instead.
+			cKey = tp
+		}
+		cr, cw := cs.CanReadWrite(cKey, pi[i].PrototypeIdx, pi[i].ForceFindDepth)
 		if cw {
 			fKeys = append(fKeys, key)
 			fRevs = append(fRevs, revs[i])
@@ -133,7 +152,12 @@ func CheckRange(txn TxnRead, cs *auth.CapturedState, rer *RangeExResult) *RangeR
 			kv := mvccpb.KeyValue{}
 			revToBytes(rev, revBytes)
 			txn.RangeExReadKV(revBytes, &kv)
-			cr, _ := cs.CanReadWrite(kv.Key, kv.PrototypeIdx, kv.ForceFindDepth)
+			key := kv.Key
+			if dm, tp := auth.PathIsDelMarker(key); dm {
+				// If it's a del marker use target path for acl checking instead.
+				key = tp
+			}
+			cr, _ := cs.CanReadWrite(key, kv.PrototypeIdx, kv.ForceFindDepth)
 			if cr {
 				rr.KVs = append(rr.KVs, kv)
 				if len(rr.KVs) >= rer.Limit {
@@ -157,11 +181,17 @@ func CheckRange(txn TxnRead, cs *auth.CapturedState, rer *RangeExResult) *RangeR
 }
 
 func CheckWatch(cs *auth.CapturedState, kv *mvccpb.KeyValue) bool {
-	cr, _ := cs.CanReadWrite(kv.Key, kv.PrototypeIdx, kv.ForceFindDepth)
+	key := kv.Key
+	if dm, tp := auth.PathIsDelMarker(key); dm {
+		// If it's a del marker use target path for acl checking instead.
+		key = tp
+	}
+	cr, _ := cs.CanReadWrite(key, kv.PrototypeIdx, kv.ForceFindDepth)
 	return cr
 }
 
 func CheckLease(cs *auth.CapturedState, li *lease.LeaseItem) bool {
+	// For lease don't use auth.PathIsDelMarker, we don't allow leases on del markers.
 	_, cw := cs.CanReadWrite([]byte(li.Key), li.PrototypeIdx, li.ForceFindDepth)
 	return cw
 }
