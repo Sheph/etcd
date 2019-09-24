@@ -82,11 +82,7 @@ func CheckPut(txn TxnRead, cs *auth.CapturedState, requests []*pb.PutRequest) []
 			}
 		}
 
-		var prevProto *auth.CachedPrototype
-		if prevPi.PrototypeIdx != 0 {
-			prevProto = cs.GetPrototype(prevPi.PrototypeIdx)
-		}
-
+		prevProto := cs.GetPrototype(prevPi.PrototypeIdx)
 		if (prevProto != nil) || auth.PathIsRoot(key) {
 			// Should only set proto info for this path if proto info for prev path exists
 			// or if it's a root path, i.e. simply "/"
@@ -96,14 +92,19 @@ func CheckPut(txn TxnRead, cs *auth.CapturedState, requests []*pb.PutRequest) []
 					proto := cs.GetPrototypeByName(string(pn))
 					if proto != nil {
 						res[r.idx].ProtoInfo.PrototypeIdx = proto.Idx
-						if (prevProto != nil) && ((prevProto.Orig.Flags & uint32(authpb.FORCE_SUBOBJECTS_FIND)) != 0) {
-							// Parent dir has FORCE_SUBOBJECTS_FIND on, so get ForceFindDepth from prev dir
-							// and assign this dir's ForceFindDepth as prev dir's ForceFindDepth + 1
-							// ForceFindDepth specifies how many consecutive FORCE_SUBOBJECTS_FIND parents are
-							// on the path, this allows us to check for dir visibility very quickly on acl check time.
-							res[r.idx].ProtoInfo.ForceFindDepth = prevPi.ForceFindDepth + 1
-						}
 					}
+				}
+				if res[r.idx].ProtoInfo.PrototypeIdx == 0 {
+					// This dir doesn't have a valid prototype, but its parent dir does,
+					// so mark it as a misc dir (e.g. dir link case).
+					res[r.idx].ProtoInfo.PrototypeIdx = PrototypeIdxMiscDir
+				}
+				if (prevProto != nil) && ((prevProto.Orig.Flags & uint32(authpb.FORCE_SUBOBJECTS_FIND)) != 0) {
+					// Parent dir has FORCE_SUBOBJECTS_FIND on, so get ForceFindDepth from prev dir
+					// and assign this dir's ForceFindDepth as prev dir's ForceFindDepth + 1
+					// ForceFindDepth specifies how many consecutive FORCE_SUBOBJECTS_FIND parents are
+					// on the path, this allows us to check for dir visibility very quickly on acl check time.
+					res[r.idx].ProtoInfo.ForceFindDepth = prevPi.ForceFindDepth + 1
 				}
 			} else {
 				// For keys proto info is just parent dir's proto info

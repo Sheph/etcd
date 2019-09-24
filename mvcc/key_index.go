@@ -31,6 +31,13 @@ type PrototypeInfo struct {
 	ForceFindDepth int32
 }
 
+const (
+	// Special prototype index that's set only on dir keys. It specifies that
+	// key is a directory with an unknown (or no) prototype, but its parent is
+	// a directory with known (> 0) prototype.
+	PrototypeIdxMiscDir int64 = -1
+)
+
 // keyIndex stores the revisions of a key in the backend.
 // Each keyIndex has at least one key generation.
 // Each generation might have several key versions.

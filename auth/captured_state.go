@@ -42,6 +42,9 @@ func (cs *CapturedState) CanReadWrite(path []byte, protoIdx int64, forceFindDept
 	}
 
 	if PathIsDir(path) {
+		if protoIdx == 0 {
+			return false, false
+		}
 		if (cs.aclCache.GetRights(path) & uint32(authpb.BUILTIN_RIGHTS_VIEW)) != 0 {
 			return true, false
 		}
