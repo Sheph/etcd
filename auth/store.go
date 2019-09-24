@@ -446,9 +446,11 @@ func (as *authStore) UserChangePassword(r *pb.AuthUserChangePasswordRequest) (*p
 	}
 
 	updatedUser := &authpb.User{
-		Name:     []byte(r.Name),
-		Roles:    user.Roles,
-		Password: hashed,
+		Name:        []byte(r.Name),
+		Roles:       user.Roles,
+		Password:    hashed,
+		Acl:         user.Acl,
+		AclRevision: user.AclRevision,
 	}
 
 	putUser(tx, updatedUser)
@@ -543,8 +545,10 @@ func (as *authStore) UserRevokeRole(r *pb.AuthUserRevokeRoleRequest) (*pb.AuthUs
 	}
 
 	updatedUser := &authpb.User{
-		Name:     user.Name,
-		Password: user.Password,
+		Name:        user.Name,
+		Password:    user.Password,
+		Acl:         user.Acl,
+		AclRevision: user.AclRevision,
 	}
 
 	for _, role := range user.Roles {
@@ -651,8 +655,10 @@ func (as *authStore) RoleDelete(r *pb.AuthRoleDeleteRequest) (*pb.AuthRoleDelete
 	users := getAllUsers(tx)
 	for _, user := range users {
 		updatedUser := &authpb.User{
-			Name:     user.Name,
-			Password: user.Password,
+			Name:        user.Name,
+			Password:    user.Password,
+			Acl:         user.Acl,
+			AclRevision: user.AclRevision,
 		}
 
 		for _, role := range user.Roles {
