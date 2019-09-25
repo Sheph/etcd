@@ -56,6 +56,7 @@ var (
 	ErrGRPCRoleNotGranted        = status.New(codes.FailedPrecondition, "etcdserver: role is not granted to the user").Err()
 	ErrGRPCPermissionNotGranted  = status.New(codes.FailedPrecondition, "etcdserver: permission is not granted to the role").Err()
 	ErrGRPCAuthNotEnabled        = status.New(codes.FailedPrecondition, "etcdserver: authentication is not enabled").Err()
+	ErrGRPCAuthOldRevision       = status.New(codes.Unauthenticated, "etcdserver: revision in header is old").Err()
 	ErrGRPCInvalidAuthToken      = status.New(codes.Unauthenticated, "etcdserver: invalid auth token").Err()
 	ErrGRPCInvalidAuthMgmt       = status.New(codes.InvalidArgument, "etcdserver: invalid auth management").Err()
 	ErrGRPCPrototypeNameEmpty    = status.New(codes.FailedPrecondition, "etcdserver: prototype name is empty").Err()
@@ -111,6 +112,7 @@ var (
 		ErrorDesc(ErrGRPCRoleNotGranted):        ErrGRPCRoleNotGranted,
 		ErrorDesc(ErrGRPCPermissionNotGranted):  ErrGRPCPermissionNotGranted,
 		ErrorDesc(ErrGRPCAuthNotEnabled):        ErrGRPCAuthNotEnabled,
+		ErrorDesc(ErrGRPCAuthOldRevision):       ErrGRPCAuthOldRevision,
 		ErrorDesc(ErrGRPCInvalidAuthToken):      ErrGRPCInvalidAuthToken,
 		ErrorDesc(ErrGRPCInvalidAuthMgmt):       ErrGRPCInvalidAuthMgmt,
 		ErrorDesc(ErrGRPCPrototypeNameEmpty):    ErrGRPCPrototypeNameEmpty,
@@ -168,6 +170,7 @@ var (
 	ErrRoleNotGranted        = Error(ErrGRPCRoleNotGranted)
 	ErrPermissionNotGranted  = Error(ErrGRPCPermissionNotGranted)
 	ErrAuthNotEnabled        = Error(ErrGRPCAuthNotEnabled)
+	ErrAuthOldRevision       = Error(ErrGRPCAuthOldRevision)
 	ErrInvalidAuthToken      = Error(ErrGRPCInvalidAuthToken)
 	ErrInvalidAuthMgmt       = Error(ErrGRPCInvalidAuthMgmt)
 	ErrPrototypeNameEmpty    = Error(ErrGRPCPrototypeNameEmpty)
