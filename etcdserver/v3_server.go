@@ -221,6 +221,10 @@ func (s *EtcdServer) Compact(ctx context.Context, r *pb.CompactionRequest) (*pb.
 	return resp, nil
 }
 
+func (s *EtcdServer) CompactWithRoot(ctx context.Context, r *pb.CompactionRequest) (*pb.CompactionResponse, error) {
+	return s.Compact(s.authStore.WithRoot(ctx), r)
+}
+
 func (s *EtcdServer) LeaseGrant(ctx context.Context, r *pb.LeaseGrantRequest) (*pb.LeaseGrantResponse, error) {
 	// no id given? choose one
 	for r.ID == int64(lease.NoLease) {

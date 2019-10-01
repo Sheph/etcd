@@ -83,7 +83,7 @@ func (t *Revision) Run() {
 			}
 
 			plog.Noticef("Starting auto-compaction at revision %d (retention: %d revisions)", rev, t.retention)
-			_, err := t.c.Compact(t.ctx, &pb.CompactionRequest{Revision: rev})
+			_, err := t.c.CompactWithRoot(t.ctx, &pb.CompactionRequest{Revision: rev})
 			if err == nil || err == mvcc.ErrCompacted {
 				prev = rev
 				plog.Noticef("Finished auto-compaction at revision %d", rev)

@@ -133,7 +133,7 @@ func (t *Periodic) Run() {
 			rev := t.revs[0]
 
 			plog.Noticef("Starting auto-compaction at revision %d (retention: %v)", rev, t.period)
-			_, err := t.c.Compact(t.ctx, &pb.CompactionRequest{Revision: rev})
+			_, err := t.c.CompactWithRoot(t.ctx, &pb.CompactionRequest{Revision: rev})
 			if err == nil || err == mvcc.ErrCompacted {
 				lastSuccess = t.clock.Now()
 				plog.Noticef("Finished auto-compaction at revision %d", rev)
