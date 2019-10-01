@@ -34,7 +34,7 @@ func TestSimpleTokenDisabled(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		authInfo, ok := tp.info(ctx, token, 0)
+		authInfo, ok := tp.info(ctx, token)
 		if ok {
 			t.Errorf("expected (true, \"user1\") got (%t, %s)", ok, authInfo.Username)
 		}
@@ -53,14 +53,14 @@ func TestSimpleTokenAssign(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	authInfo, ok := tp.info(ctx, token, 0)
+	authInfo, ok := tp.info(ctx, token)
 	if !ok || authInfo.Username != "user1" {
 		t.Errorf("expected (true, \"token2\") got (%t, %s)", ok, authInfo.Username)
 	}
 
 	tp.invalidateUser("user1")
 
-	_, ok = tp.info(context.TODO(), token, 0)
+	_, ok = tp.info(context.TODO(), token)
 	if ok {
 		t.Errorf("expected ok == false after user is invalidated")
 	}

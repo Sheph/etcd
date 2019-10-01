@@ -14,9 +14,10 @@ message User {
   bytes name = 1;
   bytes password = 2;
   repeated string roles = 3;
+  uint64 modRevision = 4; // revision of auth store when user rights were modified
   // each path is unique in acl
-  repeated AclEntry acl = 4;
-  int64 aclRevision = 5;
+  repeated AclEntry acl = 5;
+  int64 aclRevision = 6;
 }
 
 // Permission is a single entity

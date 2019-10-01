@@ -180,6 +180,9 @@ type AuthStore interface {
 	// Revision gets current revision of authStore
 	Revision() uint64
 
+	// ModRevision gets current modification revision of a user
+	ModRevision(username string) uint64
+
 	// CheckPassword checks a given pair of username and password is correct
 	CheckPassword(username, password string) (uint64, error)
 
@@ -200,7 +203,7 @@ type AuthStore interface {
 }
 
 type TokenProvider interface {
-	info(ctx context.Context, token string, revision uint64) (*AuthInfo, bool)
+	info(ctx context.Context, token string) (*AuthInfo, bool)
 	assign(ctx context.Context, username string, revision uint64) (string, error)
 	enable()
 	disable()
@@ -311,7 +314,7 @@ func (as *authStore) Authenticate(ctx context.Context, username, password string
 	// Password checking is already performed in the API layer, so we don't need to check for now.
 	// Staleness of password can be detected with OCC in the API layer, too.
 
-	token, err := as.tokenProvider.assign(ctx, username, as.Revision())
+	token, err := as.tokenProvider.assign(ctx, username, user.ModRevision)
 	if err != nil {
 		return nil, err
 	}
@@ -339,7 +342,7 @@ func (as *authStore) CheckPassword(username, password string) (uint64, error) {
 		return 0, ErrAuthFailed
 	}
 
-	return getRevision(tx), nil
+	return user.ModRevision, nil
 }
 
 func (as *authStore) Recover(be backend.Backend) {
@@ -386,8 +389,9 @@ func (as *authStore) UserAdd(r *pb.AuthUserAddRequest) (*pb.AuthUserAddResponse,
 	}
 
 	newUser := &authpb.User{
-		Name:     []byte(r.Name),
-		Password: hashed,
+		Name:        []byte(r.Name),
+		Password:    hashed,
+		ModRevision: as.Revision() + 1,
 	}
 
 	putUser(tx, newUser)
@@ -449,6 +453,7 @@ func (as *authStore) UserChangePassword(r *pb.AuthUserChangePasswordRequest) (*p
 		Name:        []byte(r.Name),
 		Roles:       user.Roles,
 		Password:    hashed,
+		ModRevision: user.ModRevision,
 		Acl:         user.Acl,
 		AclRevision: user.AclRevision,
 	}
@@ -489,6 +494,7 @@ func (as *authStore) UserGrantRole(r *pb.AuthUserGrantRoleRequest) (*pb.AuthUser
 	}
 
 	user.Roles = append(user.Roles, r.Role)
+	user.ModRevision = as.Revision() + 1
 	sort.Strings(user.Roles)
 
 	putUser(tx, user)
@@ -547,6 +553,7 @@ func (as *authStore) UserRevokeRole(r *pb.AuthUserRevokeRoleRequest) (*pb.AuthUs
 	updatedUser := &authpb.User{
 		Name:        user.Name,
 		Password:    user.Password,
+		ModRevision: as.Revision() + 1,
 		Acl:         user.Acl,
 		AclRevision: user.AclRevision,
 	}
@@ -623,6 +630,21 @@ func (as *authStore) RoleRevokePermission(r *pb.AuthRoleRevokePermissionRequest)
 		return nil, ErrPermissionNotGranted
 	}
 
+	users := getAllUsers(tx)
+	for _, user := range users {
+		updateUser := false
+		for _, rl := range user.Roles {
+			if strings.Compare(rl, r.Role) == 0 {
+				updateUser = true
+				break
+			}
+		}
+		if updateUser {
+			user.ModRevision = as.Revision() + 1
+			putUser(tx, user)
+		}
+	}
+
 	putRole(tx, updatedRole)
 
 	// TODO(mitake): currently single role update invalidates every cache
@@ -657,6 +679,7 @@ func (as *authStore) RoleDelete(r *pb.AuthRoleDeleteRequest) (*pb.AuthRoleDelete
 		updatedUser := &authpb.User{
 			Name:        user.Name,
 			Password:    user.Password,
+			ModRevision: as.Revision() + 1,
 			Acl:         user.Acl,
 			AclRevision: user.AclRevision,
 		}
@@ -724,6 +747,13 @@ func (as *authStore) PrototypeUpdate(r *pb.AuthPrototypeUpdateRequest) (*pb.Auth
 	}
 	if newCache.Rev != as.prototypeCache.Rev {
 		putPrototypeRevision(tx, newCache.Rev)
+		users := getAllUsers(tx)
+		for _, user := range users {
+			if !hasRootRole(user) {
+				user.ModRevision = as.Revision() + 1
+				putUser(tx, user)
+			}
+		}
 	}
 	as.prototypeCache = newCache
 
@@ -745,6 +775,13 @@ func (as *authStore) PrototypeDelete(r *pb.AuthPrototypeDeleteRequest) (*pb.Auth
 	}
 	if newCache.Rev != as.prototypeCache.Rev {
 		putPrototypeRevision(tx, newCache.Rev)
+		users := getAllUsers(tx)
+		for _, user := range users {
+			if !hasRootRole(user) {
+				user.ModRevision = as.Revision() + 1
+				putUser(tx, user)
+			}
+		}
 	}
 	as.prototypeCache = newCache
 
@@ -799,6 +836,9 @@ func (as *authStore) UserUpdateAcl(r *pb.AuthUserUpdateAclRequest) (*pb.AuthUser
 
 	user.Acl = r.Acl
 	user.AclRevision = newAc.Rev
+	if !hasRootRole(user) {
+		user.ModRevision = as.Revision() + 1
+	}
 	putUser(tx, user)
 	as.aclCache[string(user.Name)] = newAc
 
@@ -833,7 +873,15 @@ func (as *authStore) UserRevisions(r *pb.AuthUserRevisionsRequest) (*pb.AuthUser
 }
 
 func (as *authStore) authInfoFromToken(ctx context.Context, token string) (*AuthInfo, bool) {
-	return as.tokenProvider.info(ctx, token, as.Revision())
+	ai, res := as.tokenProvider.info(ctx, token)
+	if res && (ai.Revision == 0) {
+		ai.Revision = as.ModRevision(ai.Username)
+		if ai.Revision == 0 {
+			plog.Warningf("invalid token: %s", token)
+			return nil, false
+		}
+	}
+	return ai, res
 }
 
 type permSlice []*authpb.Permission
@@ -879,6 +927,21 @@ func (as *authStore) RoleGrantPermission(r *pb.AuthRoleGrantPermissionRequest) (
 		sort.Sort(permSlice(role.KeyPermission))
 	}
 
+	users := getAllUsers(tx)
+	for _, user := range users {
+		updateUser := false
+		for _, rl := range user.Roles {
+			if strings.Compare(rl, r.Name) == 0 {
+				updateUser = true
+				break
+			}
+		}
+		if updateUser {
+			user.ModRevision = as.Revision() + 1
+			putUser(tx, user)
+		}
+	}
+
 	putRole(tx, role)
 
 	// TODO(mitake): currently single role update invalidates every cache
@@ -907,14 +970,14 @@ func (as *authStore) isOpPermitted(userName string, revision uint64, key, rangeE
 	tx.Lock()
 	defer tx.Unlock()
 
-	if revision != as.Revision() {
-		return NewCapturedState(as.prototypeCache, nil), ErrAuthOldRevision
-	}
-
 	user := getUser(tx, userName)
 	if user == nil {
 		plog.Errorf("invalid user name %s for permission checking", userName)
 		return NewCapturedState(as.prototypeCache, nil), ErrPermissionDenied
+	}
+
+	if revision != user.ModRevision {
+		return NewCapturedState(as.prototypeCache, nil), ErrAuthOldRevision
 	}
 
 	// root role should have permission on all ranges
@@ -1203,6 +1266,19 @@ func (as *authStore) Revision() uint64 {
 	return atomic.LoadUint64(&as.revision)
 }
 
+func (as *authStore) ModRevision(username string) uint64 {
+	tx := as.be.BatchTx()
+	tx.Lock()
+	user := getUser(tx, username)
+	tx.Unlock()
+
+	if user == nil {
+		return 0
+	}
+
+	return user.ModRevision
+}
+
 func (as *authStore) AuthInfoFromTLS(ctx context.Context) *AuthInfo {
 	peer, ok := peer.FromContext(ctx)
 	if !ok || peer == nil || peer.AuthInfo == nil {
@@ -1217,7 +1293,7 @@ func (as *authStore) AuthInfoFromTLS(ctx context.Context) *AuthInfo {
 
 			ai := &AuthInfo{
 				Username: cn,
-				Revision: as.Revision(),
+				Revision: 0,
 			}
 			md, ok := metadata.FromIncomingContext(ctx)
 			if !ok {
@@ -1231,6 +1307,13 @@ func (as *authStore) AuthInfoFromTLS(ctx context.Context) *AuthInfo {
 				plog.Warningf("ignoring common name in gRPC-gateway proxy request %s", ai.Username)
 				return nil
 			}
+
+			ai.Revision = as.ModRevision(ai.Username)
+			if ai.Revision == 0 {
+				plog.Warningf("no user found for %s", ai.Username)
+				return nil
+			}
+
 			return ai
 		}
 	}
@@ -1332,7 +1415,12 @@ func (as *authStore) WithRoot(ctx context.Context) context.Context {
 		ctxForAssign = ctx
 	}
 
-	token, err := as.tokenProvider.assign(ctxForAssign, "root", as.Revision())
+	rev := as.ModRevision("root")
+	if rev == 0 {
+		plog.Errorf("failed to get root user mod revision")
+		return ctx
+	}
+	token, err := as.tokenProvider.assign(ctxForAssign, "root", rev)
 	if err != nil {
 		// this must not happen
 		plog.Errorf("failed to assign token for lease revoking: %s", err)

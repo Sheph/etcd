@@ -39,14 +39,14 @@ func TestJWTInfo(t *testing.T) {
 	if aerr != nil {
 		t.Fatal(err)
 	}
-	ai, ok := jwt.info(context.TODO(), token, 123)
+	ai, ok := jwt.info(context.TODO(), token)
 	if !ok {
 		t.Fatalf("failed to authenticate with token %s", token)
 	}
 	if ai.Revision != 123 {
 		t.Fatalf("expected revision 123, got %d", ai.Revision)
 	}
-	ai, ok = jwt.info(context.TODO(), "aaa", 120)
+	ai, ok = jwt.info(context.TODO(), "aaa")
 	if ok || ai != nil {
 		t.Fatalf("expected aaa to fail to authenticate, got %+v", ai)
 	}

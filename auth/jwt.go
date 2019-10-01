@@ -34,7 +34,7 @@ func (t *tokenJWT) disable()                        {}
 func (t *tokenJWT) invalidateUser(string)           {}
 func (t *tokenJWT) genTokenPrefix() (string, error) { return "", nil }
 
-func (t *tokenJWT) info(ctx context.Context, token string, rev uint64) (*AuthInfo, bool) {
+func (t *tokenJWT) info(ctx context.Context, token string) (*AuthInfo, bool) {
 	// rev isn't used in JWT, it is only used in simple token
 	var (
 		username string
@@ -59,6 +59,10 @@ func (t *tokenJWT) info(ctx context.Context, token string, rev uint64) (*AuthInf
 
 		username = claims["username"].(string)
 		revision = uint64(claims["revision"].(float64))
+		if revision == 0 {
+			plog.Warningf("invalid jwt token: %s", token)
+			return nil, false
+		}
 	default:
 		plog.Warningf("failed to parse jwt token: %s", err)
 		return nil, false

@@ -173,7 +173,7 @@ func (t *tokenSimple) disable() {
 	}
 }
 
-func (t *tokenSimple) info(ctx context.Context, token string, revision uint64) (*AuthInfo, bool) {
+func (t *tokenSimple) info(ctx context.Context, token string) (*AuthInfo, bool) {
 	if !t.isValidSimpleToken(ctx, token) {
 		return nil, false
 	}
@@ -183,7 +183,7 @@ func (t *tokenSimple) info(ctx context.Context, token string, revision uint64) (
 		t.simpleTokenKeeper.resetSimpleToken(token)
 	}
 	t.simpleTokensMu.Unlock()
-	return &AuthInfo{Username: username, Revision: revision}, ok
+	return &AuthInfo{Username: username, Revision: 0}, ok
 }
 
 func (t *tokenSimple) assign(ctx context.Context, username string, rev uint64) (string, error) {

@@ -398,7 +398,7 @@ func (s *EtcdServer) Authenticate(ctx context.Context, r *pb.AuthenticateRequest
 		if err != nil {
 			return nil, err
 		}
-		if checkedRevision == s.AuthStore().Revision() {
+		if checkedRevision == s.AuthStore().ModRevision(r.Name) {
 			break
 		}
 		plog.Infof("revision when password checked is obsolete, retrying")
@@ -592,7 +592,7 @@ func (s *EtcdServer) doSerialize(ctx context.Context, chk func(*auth.AuthInfo) (
 	get(cs)
 	// check for stale token revision in case the auth store was updated while
 	// the request has been handled.
-	if ai.Revision != 0 && ai.Revision != s.authStore.Revision() {
+	if ai.Revision != 0 && ai.Revision != s.authStore.ModRevision(ai.Username) {
 		return auth.ErrAuthOldRevision
 	}
 	return nil
