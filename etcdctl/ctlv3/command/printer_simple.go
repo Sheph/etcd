@@ -294,8 +294,3 @@ func (s *simplePrinter) UserListAcl(user string, r v3.AuthUserListAclResponse) {
 func (s *simplePrinter) UserUpdateAcl(user string, acl []*authpb.AclEntry, r v3.AuthUserUpdateAclResponse) {
 	fmt.Printf("User %s acl updated\n", user)
 }
-
-func (s *simplePrinter) UserRevisions(r v3.AuthUserRevisionsResponse) {
-	fmt.Printf("Prototype revision: %v\n", r.PrototypesRevision)
-	fmt.Printf("Acl revision: %v\n", r.AclRevision)
-}

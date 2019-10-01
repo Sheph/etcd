@@ -45,7 +45,6 @@ func NewUserCommand() *cobra.Command {
 	ac.AddCommand(newUserRevokeRoleCommand())
 	ac.AddCommand(newUserListAclCommand())
 	ac.AddCommand(newUserUpdateAclCommand())
-	ac.AddCommand(newUserRevisionsCommand())
 
 	return ac
 }
@@ -135,14 +134,6 @@ func newUserUpdateAclCommand() *cobra.Command {
 		Use:   "updateacl <user name> [path:rightsSet:rightsUnset,...]",
 		Short: "Update user's acl",
 		Run:   userUpdateAclCommandFunc,
-	}
-}
-
-func newUserRevisionsCommand() *cobra.Command {
-	return &cobra.Command{
-		Use:   "revisions <user name>",
-		Short: "Get user revisions",
-		Run:   userRevisionsCommandFunc,
 	}
 }
 
@@ -357,19 +348,4 @@ func userUpdateAclCommandFunc(cmd *cobra.Command, args []string) {
 		ExitWithError(ExitError, err)
 	}
 	display.UserUpdateAcl(args[0], acl, *resp)
-}
-
-func userRevisionsCommandFunc(cmd *cobra.Command, args []string) {
-	if len(args) != 1 {
-		ExitWithError(ExitBadArgs, fmt.Errorf("user revisions command requires user name as its argument."))
-	}
-
-	name := args[0]
-	client := mustClientFromCmd(cmd)
-	resp, err := client.Auth.UserRevisions(context.TODO(), name)
-	if err != nil {
-		ExitWithError(ExitError, err)
-	}
-
-	display.UserRevisions(*resp)
 }

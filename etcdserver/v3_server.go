@@ -86,7 +86,6 @@ type Authenticator interface {
 	PrototypeList(ctx context.Context, r *pb.AuthPrototypeListRequest) (*pb.AuthPrototypeListResponse, error)
 	UserListAcl(ctx context.Context, r *pb.AuthUserListAclRequest) (*pb.AuthUserListAclResponse, error)
 	UserUpdateAcl(ctx context.Context, r *pb.AuthUserUpdateAclRequest) (*pb.AuthUserUpdateAclResponse, error)
-	UserRevisions(ctx context.Context, r *pb.AuthUserRevisionsRequest) (*pb.AuthUserRevisionsResponse, error)
 }
 
 func (s *EtcdServer) Range(ctx context.Context, r *pb.RangeRequest) (*pb.RangeResponse, error) {
@@ -549,14 +548,6 @@ func (s *EtcdServer) UserUpdateAcl(ctx context.Context, r *pb.AuthUserUpdateAclR
 		return nil, err
 	}
 	return resp.(*pb.AuthUserUpdateAclResponse), nil
-}
-
-func (s *EtcdServer) UserRevisions(ctx context.Context, r *pb.AuthUserRevisionsRequest) (*pb.AuthUserRevisionsResponse, error) {
-	resp, err := s.raftRequest(ctx, pb.InternalRaftRequest{AuthUserRevisions: r})
-	if err != nil {
-		return nil, err
-	}
-	return resp.(*pb.AuthUserRevisionsResponse), nil
 }
 
 func (s *EtcdServer) raftRequestOnce(ctx context.Context, r pb.InternalRaftRequest) (proto.Message, error) {

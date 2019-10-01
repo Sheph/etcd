@@ -47,7 +47,6 @@ type (
 	AuthPrototypeListResponse        pb.AuthPrototypeListResponse
 	AuthUserListAclResponse          pb.AuthUserListAclResponse
 	AuthUserUpdateAclResponse        pb.AuthUserUpdateAclResponse
-	AuthUserRevisionsResponse        pb.AuthUserRevisionsResponse
 
 	PermissionType authpb.Permission_Type
 	Permission     authpb.Permission
@@ -114,8 +113,6 @@ type Auth interface {
 	UserListAcl(ctx context.Context, user string) (*AuthUserListAclResponse, error)
 
 	UserUpdateAcl(ctx context.Context, user string, acl []*authpb.AclEntry) (*AuthUserUpdateAclResponse, error)
-
-	UserRevisions(ctx context.Context, user string) (*AuthUserRevisionsResponse, error)
 }
 
 type auth struct {
@@ -234,11 +231,6 @@ func (auth *auth) UserListAcl(ctx context.Context, user string) (*AuthUserListAc
 func (auth *auth) UserUpdateAcl(ctx context.Context, user string, acl []*authpb.AclEntry) (*AuthUserUpdateAclResponse, error) {
 	resp, err := auth.remote.UserUpdateAcl(ctx, &pb.AuthUserUpdateAclRequest{User: user, Acl: acl}, auth.callOpts...)
 	return (*AuthUserUpdateAclResponse)(resp), toErr(ctx, err)
-}
-
-func (auth *auth) UserRevisions(ctx context.Context, user string) (*AuthUserRevisionsResponse, error) {
-	resp, err := auth.remote.UserRevisions(ctx, &pb.AuthUserRevisionsRequest{User: user}, auth.callOpts...)
-	return (*AuthUserRevisionsResponse)(resp), toErr(ctx, err)
 }
 
 func StrToPermissionType(s string) (PermissionType, error) {

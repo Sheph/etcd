@@ -265,21 +265,6 @@ func (aa *authApplierV3) UserListAcl(r *pb.AuthUserListAclRequest) (*pb.AuthUser
 	return aa.applierV3.UserListAcl(r)
 }
 
-func (aa *authApplierV3) UserRevisions(r *pb.AuthUserRevisionsRequest) (*pb.AuthUserRevisionsResponse, error) {
-	err := aa.as.IsAdminPermitted(&aa.authInfo)
-	if err != nil && len(r.User) > 0 && r.User != aa.authInfo.Username {
-		aa.authInfo.Username = ""
-		aa.authInfo.Revision = 0
-		return &pb.AuthUserRevisionsResponse{}, err
-	}
-
-	if len(r.User) <= 0 {
-		r = &pb.AuthUserRevisionsRequest{User: aa.authInfo.Username}
-	}
-
-	return aa.applierV3.UserRevisions(r)
-}
-
 func needAdminPermission(r *pb.InternalRaftRequest) bool {
 	switch {
 	case r.AuthEnable != nil:

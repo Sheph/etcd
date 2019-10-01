@@ -378,13 +378,6 @@ service Auth {
         body: "*"
     };
   }
-
-  rpc UserRevisions(AuthUserRevisionsRequest) returns (AuthUserRevisionsResponse) {
-      option (google.api.http) = {
-        post: "/v3beta/auth/user/revisions"
-        body: "*"
-    };
-  }
 }
 
 message ResponseHeader {
@@ -1040,10 +1033,6 @@ message AuthUserUpdateAclRequest {
   repeated authpb.AclEntry acl = 2;
 }
 
-message AuthUserRevisionsRequest {
-  string user = 1;
-}
-
 message AuthEnableResponse {
   ResponseHeader header = 1;
 }
@@ -1140,11 +1129,4 @@ message AuthUserListAclResponse {
 
 message AuthUserUpdateAclResponse {
   ResponseHeader header = 1;
-}
-
-message AuthUserRevisionsResponse {
-  ResponseHeader header = 1;
-
-  int64 prototypesRevision = 2;
-  int64 aclRevision = 3;
 }

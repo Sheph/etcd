@@ -159,7 +159,6 @@ type AuthStore interface {
 	PrototypeList(r *pb.AuthPrototypeListRequest) (*pb.AuthPrototypeListResponse, error)
 	UserListAcl(r *pb.AuthUserListAclRequest) (*pb.AuthUserListAclResponse, error)
 	UserUpdateAcl(r *pb.AuthUserUpdateAclRequest) (*pb.AuthUserUpdateAclResponse, error)
-	UserRevisions(r *pb.AuthUserRevisionsRequest) (*pb.AuthUserRevisionsResponse, error)
 
 	// IsPutPermitted checks put permission of the user
 	IsPutPermitted(authInfo *AuthInfo, key []byte) (*CapturedState, error)
@@ -846,30 +845,6 @@ func (as *authStore) UserUpdateAcl(r *pb.AuthUserUpdateAclRequest) (*pb.AuthUser
 
 	plog.Noticef("user %s acl updated", r.User)
 	return &pb.AuthUserUpdateAclResponse{}, nil
-}
-
-func (as *authStore) UserRevisions(r *pb.AuthUserRevisionsRequest) (*pb.AuthUserRevisionsResponse, error) {
-	tx := as.be.BatchTx()
-	tx.Lock()
-	defer tx.Unlock()
-
-	user := getUser(tx, r.User)
-
-	if user == nil {
-		return nil, ErrUserNotFound
-	}
-
-	var resp pb.AuthUserRevisionsResponse
-	if hasRootRole(user) {
-		// for root we pretend that acl info never changes, that's because
-		// it's never actually used
-		resp.PrototypesRevision = 0
-		resp.AclRevision = 0
-	} else {
-		resp.PrototypesRevision = as.prototypeCache.Rev
-		resp.AclRevision = as.getAclCache(user).Rev
-	}
-	return &resp, nil
 }
 
 func (as *authStore) authInfoFromToken(ctx context.Context, token string) (*AuthInfo, bool) {

@@ -71,7 +71,6 @@ type printer interface {
 	PrototypeList(r v3.AuthPrototypeListResponse)
 	UserListAcl(user string, r v3.AuthUserListAclResponse)
 	UserUpdateAcl(user string, acl []*authpb.AclEntry, r v3.AuthUserUpdateAclResponse)
-	UserRevisions(r v3.AuthUserRevisionsResponse)
 }
 
 func NewPrinter(printerType string, isHex bool) printer {

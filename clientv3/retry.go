@@ -534,11 +534,3 @@ func (rac *retryAuthClient) UserUpdateAcl(ctx context.Context, in *pb.AuthUserUp
 	}, nonRepeatable)
 	return resp, err
 }
-
-func (rac *retryAuthClient) UserRevisions(ctx context.Context, in *pb.AuthUserRevisionsRequest, opts ...grpc.CallOption) (resp *pb.AuthUserRevisionsResponse, err error) {
-	err = rac.retryf(ctx, func(rctx context.Context) error {
-		resp, err = rac.ac.UserRevisions(rctx, in, opts...)
-		return err
-	}, repeatable)
-	return resp, err
-}

@@ -133,8 +133,3 @@ func (ap *AuthProxy) UserUpdateAcl(ctx context.Context, r *pb.AuthUserUpdateAclR
 	conn := ap.client.ActiveConnection()
 	return pb.NewAuthClient(conn).UserUpdateAcl(ctx, r)
 }
-
-func (ap *AuthProxy) UserRevisions(ctx context.Context, r *pb.AuthUserRevisionsRequest) (*pb.AuthUserRevisionsResponse, error) {
-	conn := ap.client.ActiveConnection()
-	return pb.NewAuthClient(conn).UserRevisions(ctx, r)
-}

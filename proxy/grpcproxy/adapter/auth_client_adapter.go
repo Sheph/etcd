@@ -111,7 +111,3 @@ func (s *as2ac) UserListAcl(ctx context.Context, in *pb.AuthUserListAclRequest, 
 func (s *as2ac) UserUpdateAcl(ctx context.Context, in *pb.AuthUserUpdateAclRequest, opts ...grpc.CallOption) (*pb.AuthUserUpdateAclResponse, error) {
 	return s.as.UserUpdateAcl(ctx, in)
 }
-
-func (s *as2ac) UserRevisions(ctx context.Context, in *pb.AuthUserRevisionsRequest, opts ...grpc.CallOption) (*pb.AuthUserRevisionsResponse, error) {
-	return s.as.UserRevisions(ctx, in)
-}

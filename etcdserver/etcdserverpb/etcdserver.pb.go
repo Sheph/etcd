@@ -90,7 +90,6 @@
 		AuthPrototypeListRequest
 		AuthUserListAclRequest
 		AuthUserUpdateAclRequest
-		AuthUserRevisionsRequest
 		AuthEnableResponse
 		AuthDisableResponse
 		AuthenticateResponse
@@ -112,7 +111,6 @@
 		AuthPrototypeListResponse
 		AuthUserListAclResponse
 		AuthUserUpdateAclResponse
-		AuthUserRevisionsResponse
 */
 package etcdserverpb
 

@@ -62,7 +62,6 @@ message InternalRaftRequest {
   AuthPrototypeListRequest auth_prototype_list = 1902;
   AuthUserListAclRequest auth_user_list_acl = 1903;
   AuthUserUpdateAclRequest auth_user_update_acl = 1904;
-  AuthUserRevisionsRequest auth_user_revisions = 1905;
 }
 
 message EmptyResponse {

@@ -196,11 +196,3 @@ func (as *AuthServer) UserUpdateAcl(ctx context.Context, r *pb.AuthUserUpdateAcl
 	}
 	return resp, nil
 }
-
-func (as *AuthServer) UserRevisions(ctx context.Context, r *pb.AuthUserRevisionsRequest) (*pb.AuthUserRevisionsResponse, error) {
-	resp, err := as.authenticator.UserRevisions(ctx, r)
-	if err != nil {
-		return nil, togRPCError(err)
-	}
-	return resp, nil
-}
