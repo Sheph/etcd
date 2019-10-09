@@ -44,6 +44,7 @@ import (
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/grpclog"
+	"google.golang.org/grpc/keepalive"
 )
 
 var (
@@ -82,9 +83,15 @@ var (
 	grpcProxyEnableOrdering bool
 
 	grpcProxyDebug bool
+
+	grpcProxyKeepAliveTime    time.Duration
+	grpcProxyKeepAliveTimeout time.Duration
 )
 
 const defaultGRPCMaxCallSendMsgSize = 1.5 * 1024 * 1024
+
+const defaultGRPCKeepAliveTime = 2 * time.Second
+const defaultGRPCKeepAliveTimeout = 4 * time.Second
 
 func init() {
 	rootCmd.AddCommand(newGRPCProxyCommand())
@@ -140,6 +147,9 @@ func newGRPCProxyStartCommand() *cobra.Command {
 	cmd.Flags().StringVar(&grpcProxyLeasing, "experimental-leasing-prefix", "", "leasing metadata prefix for disconnected linearized reads.")
 
 	cmd.Flags().BoolVar(&grpcProxyDebug, "debug", false, "Enable debug-level logging for grpc-proxy.")
+
+	cmd.Flags().DurationVar(&grpcProxyKeepAliveTime, "keepalive-time", defaultGRPCKeepAliveTime, "keepalive time for inner client connection")
+	cmd.Flags().DurationVar(&grpcProxyKeepAliveTimeout, "keepalive-timeout", defaultGRPCKeepAliveTimeout, "keepalive timeout for inner client connection")
 
 	return &cmd
 }
@@ -233,6 +243,11 @@ func mustNewClient() *clientv3.Client {
 		grpc.WithUnaryInterceptor(grpcproxy.AuthUnaryClientInterceptor))
 	cfg.DialOptions = append(cfg.DialOptions,
 		grpc.WithStreamInterceptor(grpcproxy.AuthStreamClientInterceptor))
+	params := keepalive.ClientParameters{
+		Time:    grpcProxyKeepAliveTime,
+		Timeout: grpcProxyKeepAliveTimeout,
+	}
+	cfg.DialOptions = append(cfg.DialOptions, grpc.WithKeepaliveParams(params))
 	client, err := clientv3.New(*cfg)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
